@@ -67,6 +67,14 @@ class ReviewResult:
 
 
 @dataclass(slots=True)
+class BatchPlanEntry:
+    index: int
+    size: int
+    first_id: str
+    last_id: str
+
+
+@dataclass(slots=True)
 class PipelineOptions:
     input_path: Path
     output_path: Path | None = None
@@ -81,11 +89,21 @@ class PipelineOptions:
     timeout_seconds: float = 120.0
     api_key: str | None = None
     base_url: str | None = None
+    dry_run: bool = False
+    resume: bool = True
+    use_cache: bool = True
+    work_dir: Path | None = None
+    glossary_path: Path | None = None
 
 
 @dataclass(slots=True)
 class PipelineResult:
-    output_path: Path
+    output_path: Path | None
     batches_translated: int
     review_batches: int
     usage: Usage
+    dry_run: bool = False
+    planned_batches: list[BatchPlanEntry] = field(default_factory=list)
+    cache_hits: int = 0
+    state_path: Path | None = None
+    glossary_path: Path | None = None

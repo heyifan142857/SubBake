@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass
+from time import monotonic
 
 from rich.console import Console, Group
 from rich.live import Live
@@ -36,7 +37,8 @@ class Dashboard:
             "WRITE_OUTPUT",
         ]
         self.stage_states = {stage: "pending" for stage in self.stage_order}
-        self.live = Live(self.render(), console=self.console, refresh_per_second=10)
+        self.spinner_frames = ["·  ", "·· ", "···", " ··", "  ·", " ··"]
+        self.live = Live(self, console=self.console, refresh_per_second=8)
 
     @contextmanager
     def running(self):
@@ -67,6 +69,18 @@ class Dashboard:
         self.usage.add(usage)
         self.refresh()
 
+    def restore_usage(self, usage: Usage) -> None:
+        self.usage = Usage(
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+            total_tokens=usage.total_tokens,
+        )
+        self.refresh()
+
+    def restore_progress(self, completed_steps: int) -> None:
+        self.completed_steps = max(0, completed_steps)
+        self.refresh()
+
     def set_batch(self, index: int, total: int, latency_seconds: float, stage_label: str) -> None:
         self.batch = BatchSnapshot(
             index=index,
@@ -81,7 +95,10 @@ class Dashboard:
         self.refresh()
 
     def refresh(self) -> None:
-        self.live.update(self.render(), refresh=True)
+        self.live.refresh()
+
+    def __rich__(self) -> Panel:
+        return self.render()
 
     def render(self) -> Panel:
         timeline_rows: list[Text] = []
@@ -92,11 +109,7 @@ class Dashboard:
                 label = f"{stage} {self.batch.index}/{self.batch.total}"
             if stage == "FINAL_REVIEW" and self.batch.stage_label.startswith("FINAL_REVIEW"):
                 label = self.batch.stage_label
-            style, icon = {
-                "done": ("green", "✓"),
-                "running": ("yellow", ">"),
-                "pending": ("white", " "),
-            }[state]
+            style, icon = self._timeline_indicator(state)
             row = Text()
             row.append("[", style=style)
             row.append(icon, style=style)
@@ -137,3 +150,11 @@ class Dashboard:
         ratio = min(1.0, self.completed_steps / self.total_steps)
         filled = int(ratio * width)
         return f"[{'█' * filled}{'-' * (width - filled)}] {ratio * 100:>5.1f}%"
+
+    def _timeline_indicator(self, state: str) -> tuple[str, str]:
+        if state == "done":
+            return "green", " ✓ "
+        if state == "running":
+            frame_index = int(monotonic() * 8) % len(self.spinner_frames)
+            return "yellow", self.spinner_frames[frame_index]
+        return "white", "   "

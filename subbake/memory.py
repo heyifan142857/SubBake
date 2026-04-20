@@ -34,3 +34,26 @@ class ContextMemory:
             self.recent_summaries = self.recent_summaries[-self.max_summaries :]
         for entry in glossary_updates:
             self.glossary[entry.source] = entry.target
+
+    def load_glossary(self, glossary: dict[str, str]) -> None:
+        self.glossary = dict(glossary)
+
+    def to_dict(self) -> dict:
+        return {
+            "style_rules": list(self.style_rules),
+            "recent_summaries": list(self.recent_summaries),
+            "glossary": dict(self.glossary),
+            "max_summaries": self.max_summaries,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "ContextMemory":
+        memory = cls()
+        memory.style_rules = list(data.get("style_rules", DEFAULT_STYLE_RULES))
+        memory.recent_summaries = list(data.get("recent_summaries", []))
+        memory.glossary = {
+            str(key): str(value)
+            for key, value in dict(data.get("glossary", {})).items()
+        }
+        memory.max_summaries = int(data.get("max_summaries", memory.max_summaries))
+        return memory
