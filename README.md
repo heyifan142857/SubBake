@@ -17,6 +17,12 @@
 ## 安装
 
 ```bash
+pip install subbake
+```
+
+本地开发可使用：
+
+```bash
 pip install -e .
 ```
 
