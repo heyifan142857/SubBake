@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+uv.lock
+*.translated.srt
+*.translated.vtt
+*.translated.txt
+*.bilingual.srt
+*.bilingual.vtt
+*.bilingual.txt
