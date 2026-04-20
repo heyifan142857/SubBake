@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 import typer
@@ -9,6 +10,7 @@ from subbake import __version__
 from subbake.entities import PipelineOptions
 from subbake.models import build_backend
 from subbake.pipeline import SubtitlePipeline
+from subbake.storage import build_runtime_paths
 from subbake.ui import Dashboard
 
 APP_HELP = """LLM subtitle translation CLI with Chinese as the default target language.
@@ -17,6 +19,9 @@ Common commands:
   sbake translate input.srt --provider openai
   sbake translate input.vtt --bilingual
   sbake translate input.srt --dry-run
+  sbake check-key --provider openai
+  sbake clean input.srt
+  sbake clean . --all
 
 Common options for `sbake translate`:
   --provider       Choose the model provider, such as mock / openai / anthropic
@@ -31,8 +36,22 @@ Common options for `sbake translate`:
   --work-dir       Directory for cache / run state / failures
   --glossary-path  Path to the persistent glossary JSON file
 
-See full translate command options:
+Common options for `sbake clean`:
+  --runs           Remove run state and failure samples
+  --cache          Remove cached responses
+  --glossary       Remove the persistent glossary file
+  --all            Remove all runtime artifacts
+
+Common options for `sbake check-key`:
+  --provider       Choose the provider to validate
+  --api-key        Pass the API key directly
+  --base-url       Set the OpenAI-compatible API base URL
+  --timeout        Set the network timeout in seconds
+
+See full command options:
   sbake translate --help
+  sbake check-key --help
+  sbake clean --help
 """
 
 app = typer.Typer(
@@ -164,6 +183,172 @@ def translate(
         console.print(f"[bold green]Glossary:[/bold green] {result.glossary_path}")
     if result.state_path is not None:
         console.print(f"[bold green]Run state:[/bold green] {result.state_path}")
+
+
+@app.command("check-key")
+def check_key(
+    provider: str = typer.Option("openai", "--provider", help="LLM provider: mock, openai, anthropic."),
+    model: str = typer.Option(
+        "check-only",
+        "--model",
+        help="Optional model name for backend initialization. Not required for most providers.",
+    ),
+    api_key: str | None = typer.Option(None, "--api-key", help="API key override for the provider."),
+    base_url: str | None = typer.Option(None, "--base-url", help="OpenAI-compatible API base URL."),
+    timeout: float = typer.Option(30.0, "--timeout", min=1.0, help="Credential check timeout in seconds."),
+) -> None:
+    """Check whether the configured provider credentials are accepted."""
+
+    try:
+        backend = build_backend(
+            provider=provider,
+            model=model,
+            api_key=api_key,
+            base_url=base_url,
+            timeout_seconds=timeout,
+        )
+        valid, message = backend.check_credentials()
+    except Exception as exc:
+        console.print(f"[bold red]Error:[/bold red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    if valid:
+        console.print("[bold green]Credential check passed.[/bold green]")
+        console.print(message)
+        return
+
+    console.print("[bold red]Credential check failed.[/bold red]")
+    console.print(message)
+    raise typer.Exit(code=1)
+
+@app.command()
+def clean(
+    target: Path = typer.Argument(
+        Path("."),
+        exists=True,
+        file_okay=True,
+        dir_okay=True,
+        resolve_path=True,
+        help="Subtitle file or directory used to locate runtime artifacts.",
+    ),
+    work_dir: Path | None = typer.Option(
+        None,
+        "--work-dir",
+        file_okay=False,
+        resolve_path=True,
+        help="Explicit runtime directory to clean instead of deriving .subbake from the target.",
+    ),
+    runs: bool = typer.Option(False, "--runs", help="Remove run state and failure samples."),
+    cache: bool = typer.Option(False, "--cache", help="Remove cached model responses."),
+    glossary: bool = typer.Option(False, "--glossary", help="Remove the persistent glossary file."),
+    all: bool = typer.Option(
+        False,
+        "--all",
+        help="Remove all runtime artifacts. This is the default for directory targets.",
+    ),
+) -> None:
+    """Remove cached runtime files, run state, failure samples, and glossary data."""
+
+    runtime_root, run_dir, glossary_file = _resolve_clean_paths(
+        target=target,
+        work_dir=work_dir,
+    )
+    remove_runs, remove_cache, remove_glossary = _resolve_clean_selection(
+        target=target,
+        runs=runs,
+        cache=cache,
+        glossary=glossary,
+        all=all,
+    )
+
+    removed: list[str] = []
+    missing: list[str] = []
+
+    if remove_runs:
+        removed_path = run_dir if target.is_file() else runtime_root / "runs"
+        _remove_path(removed_path, removed, missing, "runs")
+    if remove_cache:
+        _remove_path(runtime_root / "cache", removed, missing, "cache")
+    if remove_glossary:
+        _remove_path(glossary_file, removed, missing, "glossary")
+
+    if target.is_dir() or work_dir is not None or all:
+        _prune_empty_runtime_root(runtime_root)
+    elif run_dir.parent.exists() and not any(run_dir.parent.iterdir()):
+        run_dir.parent.rmdir()
+        _prune_empty_runtime_root(runtime_root)
+
+    if removed:
+        console.print("[bold green]Removed:[/bold green]")
+        for item in removed:
+            console.print(f"  - {item}")
+    else:
+        console.print("[bold yellow]Nothing removed.[/bold yellow]")
+
+    if missing:
+        console.print("[bold yellow]Not found:[/bold yellow]")
+        for item in missing:
+            console.print(f"  - {item}")
+
+
+def _resolve_clean_paths(
+    target: Path,
+    work_dir: Path | None,
+) -> tuple[Path, Path, Path]:
+    if target.is_file():
+        runtime_paths = build_runtime_paths(
+            input_path=target,
+            work_dir=work_dir,
+            glossary_path=None,
+        )
+        return runtime_paths.root_dir, runtime_paths.run_dir, runtime_paths.glossary_path
+
+    runtime_root = work_dir or target / ".subbake"
+    return runtime_root, runtime_root / "runs", runtime_root / "glossary.json"
+
+
+def _resolve_clean_selection(
+    *,
+    target: Path,
+    runs: bool,
+    cache: bool,
+    glossary: bool,
+    all: bool,
+) -> tuple[bool, bool, bool]:
+    if all:
+        return True, True, True
+    if runs or cache or glossary:
+        return runs, cache, glossary
+    if target.is_file():
+        return True, False, False
+    return True, True, True
+
+
+def _remove_path(
+    path: Path,
+    removed: list[str],
+    missing: list[str],
+    label: str,
+) -> None:
+    if not path.exists():
+        missing.append(f"{label}: {path}")
+        return
+    if path.is_dir():
+        shutil.rmtree(path)
+    else:
+        path.unlink()
+    removed.append(f"{label}: {path}")
+
+
+def _prune_empty_runtime_root(runtime_root: Path) -> None:
+    if not runtime_root.exists():
+        return
+    for child in runtime_root.iterdir():
+        if child.is_dir():
+            return
+        if child.is_file():
+            return
+    runtime_root.rmdir()
 
 
 if __name__ == "__main__":

@@ -86,6 +86,20 @@ sbake translate input.srt --provider openai --model your-model --glossary-path .
 sbake translate input.srt --provider openai --model your-model --no-resume --no-cache
 ```
 
+清理运行期文件：
+
+```bash
+sbake clean input.srt
+sbake clean . --all
+```
+
+检查 Key 是否可用：
+
+```bash
+sbake check-key --provider openai
+sbake check-key --provider anthropic
+```
+
 ## 模型接入
 
 支持以下后端：
@@ -131,4 +145,6 @@ sbake translate input.srt --provider openai --model your-model --no-resume --no-
 
 ```bash
 sbake translate --help
+sbake check-key --help
+sbake clean --help
 ```

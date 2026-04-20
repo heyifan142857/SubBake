@@ -15,6 +15,10 @@ class LLMBackend(ABC):
     def generate_json(self, messages: list[dict[str, str]]) -> tuple[dict, Usage]:
         raise NotImplementedError
 
+    @abstractmethod
+    def check_credentials(self) -> tuple[bool, str]:
+        raise NotImplementedError
+
 
 class MockBackend(LLMBackend):
     def generate_json(self, messages: list[dict[str, str]]) -> tuple[dict, Usage]:
@@ -59,6 +63,9 @@ class MockBackend(LLMBackend):
         usage.total_tokens = usage.input_tokens + usage.output_tokens
         return result, usage
 
+    def check_credentials(self) -> tuple[bool, str]:
+        return True, "Mock provider does not require an API key."
+
 
 class OpenAIBackend(LLMBackend):
     def __init__(
@@ -90,6 +97,28 @@ class OpenAIBackend(LLMBackend):
                 fallback = {"model": self.model, "messages": messages}
                 return self._request(fallback)
             raise RuntimeError(f"OpenAI request failed: {body}") from exc
+
+    def check_credentials(self) -> tuple[bool, str]:
+        request = urllib.request.Request(
+            url=f"{self.base_url}/models",
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+            },
+            method="GET",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
+                data = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            return False, _format_http_error("OpenAI-compatible", exc.code, body)
+        except urllib.error.URLError as exc:
+            return False, f"OpenAI-compatible credential check failed: {exc.reason}"
+
+        model_count = len(data.get("data", [])) if isinstance(data, dict) else 0
+        if model_count:
+            return True, f"Credentials look valid. {model_count} model(s) visible from {self.base_url}."
+        return True, f"Credentials look valid. Successfully reached {self.base_url}."
 
     def _request(self, payload: dict) -> tuple[dict, Usage]:
         request = urllib.request.Request(
@@ -176,6 +205,29 @@ class AnthropicBackend(LLMBackend):
             usage.total_tokens = usage.input_tokens + usage.output_tokens
         return parsed, usage
 
+    def check_credentials(self) -> tuple[bool, str]:
+        request = urllib.request.Request(
+            url="https://api.anthropic.com/v1/models",
+            headers={
+                "x-api-key": self.api_key,
+                "anthropic-version": "2023-06-01",
+            },
+            method="GET",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
+                data = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            body = exc.read().decode("utf-8", errors="replace")
+            return False, _format_http_error("Anthropic", exc.code, body)
+        except urllib.error.URLError as exc:
+            return False, f"Anthropic credential check failed: {exc.reason}"
+
+        model_count = len(data.get("data", [])) if isinstance(data, dict) else 0
+        if model_count:
+            return True, f"Credentials look valid. {model_count} model(s) visible from Anthropic."
+        return True, "Credentials look valid. Successfully reached Anthropic."
+
 
 def build_backend(
     provider: str,
@@ -252,3 +304,10 @@ def _estimate_tokens(text: str) -> int:
     if not stripped:
         return 0
     return max(1, len(stripped) // 4)
+
+
+def _format_http_error(provider_label: str, status_code: int, body: str) -> str:
+    normalized = body.strip().replace("\n", " ")
+    if status_code in {401, 403}:
+        return f"{provider_label} rejected the credentials ({status_code}): {normalized}"
+    return f"{provider_label} credential check failed ({status_code}): {normalized}"
