@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77.0.3"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,7 +8,8 @@ version = "0.1.0"
 description = "LLM-powered subtitle translation CLI with batch memory and review passes."
 readme = "README.md"
 requires-python = ">=3.11"
-license = { file = "LICENSE" }
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [
   { name = "azote", email = "231880175@smail.nju.edu.cn" },
 ]
@@ -25,7 +26,6 @@ classifiers = [
   "Environment :: Console",
   "Intended Audience :: Developers",
   "Intended Audience :: End Users/Desktop",
-  "License :: OSI Approved :: MIT License",
   "Operating System :: OS Independent",
   "Programming Language :: Python",
   "Programming Language :: Python :: 3",
