@@ -8,10 +8,41 @@ version = "0.1.0"
 description = "LLM-powered subtitle translation CLI with batch memory and review passes."
 readme = "README.md"
 requires-python = ">=3.11"
+authors = [
+  { name = "azote", email = "231880175@smail.nju.edu.cn" },
+]
+keywords = [
+  "subtitle",
+  "translation",
+  "cli",
+  "llm",
+  "srt",
+  "vtt",
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Intended Audience :: End Users/Desktop",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Topic :: Software Development :: Localization",
+  "Topic :: Text Processing",
+  "Topic :: Utilities",
+]
 dependencies = [
   "rich>=13.7.0",
   "typer>=0.12.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/heyifan142857/SubBake"
+Repository = "https://github.com/heyifan142857/SubBake"
+Issues = "https://github.com/heyifan142857/SubBake/issues"
 
 [project.scripts]
 sbake = "subbake.app:app"
