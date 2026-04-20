@@ -1,8 +1,15 @@
 # subbake
 
+[![PyPI version](https://img.shields.io/pypi/v/subbake)](https://pypi.org/project/subbake/)
+[![Python versions](https://img.shields.io/pypi/pyversions/subbake)](https://pypi.org/project/subbake/)
+[![CI](https://github.com/heyifan142857/SubBake/actions/workflows/ci.yml/badge.svg)](https://github.com/heyifan142857/SubBake/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+
 `subbake` 是一个简单的字幕翻译 CLI，默认将字幕翻译为中文。
 
 它的目标是用尽量直接的命令行工作流处理字幕翻译，同时保留对批量翻译、断点续跑、缓存和复审这些实用能力的支持。
+
+![subbake CLI demo](assets/subbake-demo.gif)
 
 ## 核心能力
 
