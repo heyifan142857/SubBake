@@ -15,6 +15,7 @@ from http.client import HTTPMessage
 from typing import Any
 
 from subbake.entities import GlossaryEntry, TranslationLine, Usage
+from subbake.languages import language_short_code, normalize_language_name
 
 
 @dataclass(slots=True)
@@ -67,12 +68,15 @@ class MockBackend(LLMBackend):
         )
 
         if task == "translate_subtitles":
+            context = json.loads(_extract_between(prompt, "CONTEXT_JSON_START", "CONTEXT_JSON_END"))
             payload = json.loads(_extract_between(prompt, "BATCH_JSON_START", "BATCH_JSON_END"))
+            target_language = normalize_language_name(str(context.get("tgt", "Chinese")))
+            tag = language_short_code(target_language)
             lines = []
             glossary_updates = []
             for item in payload["lines"]:
                 source_text = item["text"]
-                translated = "" if not source_text.strip() else f"[MOCK-ZH] {source_text}"
+                translated = "" if not source_text.strip() else f"[MOCK-{tag}] {source_text}"
                 lines.append({"id": item["id"], "translation": translated})
                 names = re.findall(r"\b[A-Z][a-zA-Z]+\b", source_text)
                 for name in names:

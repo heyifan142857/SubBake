@@ -112,6 +112,15 @@ class Dashboard:
             self.current_stage_started_at = None
         self.refresh()
 
+    def mark_skipped(self, stage: str, advance: bool = True) -> None:
+        if self.current_stage == stage:
+            self.current_stage = None
+            self.current_stage_started_at = None
+        self.stage_states[stage] = "skipped"
+        if advance:
+            self.completed_steps += 1
+        self.refresh()
+
     def add_usage(self, usage: Usage) -> None:
         self.usage.add(usage)
         self.refresh()
@@ -197,6 +206,8 @@ class Dashboard:
         return Panel(group, border_style="cyan", title="Subtitle Translation")
 
     def _timeline_stage_label(self, stage: str) -> str:
+        if self.stage_states.get(stage) == "skipped":
+            return f"{stage} SKIPPED"
         if stage in self.BATCH_STAGES:
             total = self.batch_stage_totals.get(stage, 0)
             if total:
@@ -444,6 +455,8 @@ class Dashboard:
     def _timeline_indicator(self, state: str) -> tuple[str, str]:
         if state == "done":
             return "green", " ✓ "
+        if state == "skipped":
+            return "bright_black", " - "
         if state == "running":
             frame_index = int(monotonic() * 8) % len(self.spinner_frames)
             return "yellow", self.spinner_frames[frame_index]

@@ -83,6 +83,7 @@ class PipelineOptions:
     provider: str = "mock"
     model: str = "mock-zh"
     batch_size: int = DEFAULT_BATCH_SIZE
+    fast_mode: bool = False
     bilingual: bool = False
     target_language: str = "Chinese"
     source_language: str = "Auto"

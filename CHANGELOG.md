@@ -2,6 +2,22 @@
 
 This file tracks notable changes for each release.
 
+## [Unreleased]
+
+### Added
+
+- A `--fast` mode that uses lighter prompts, skips final review, and prefers best-effort completion when model structure is unstable.
+- Target language aliases such as `en`, `ja`, `ko`, `fr`, `es`, and `de`, plus matching source-language alias support.
+- `subbake.toml` configuration support with auto-discovery, `--config`, `--profile`, `[defaults]`, and named profiles for model/provider presets.
+
+### Changed
+
+- Persistent glossary and translation-memory files are now isolated per language pair to avoid cross-language reuse.
+- Translation memory is now also isolated by fast vs standard mode, so normal runs do not reuse lower-quality fast-mode translations.
+- Mock translations now reflect the requested target language, which keeps local testing aligned with the new alias-aware target-language behavior.
+- Command-line options now override config values, while config defaults and profiles fill in omitted parameters.
+- When multiple config profiles exist, `sbake` now requires `default_profile` or an explicit `--profile` instead of silently picking the first one.
+
 ## [0.2.0] - 2026-04-21
 
 ### Added

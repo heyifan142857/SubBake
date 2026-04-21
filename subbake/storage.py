@@ -8,10 +8,11 @@ from pathlib import Path
 from typing import Any
 
 from subbake.entities import PipelineOptions, SubtitleSegment, Usage
+from subbake.languages import language_pair_slug
 from subbake.memory import ContextMemory
 
 RUN_STATE_VERSION = 3
-TRANSLATION_FINGERPRINT_VERSION = 4
+TRANSLATION_FINGERPRINT_VERSION = 5
 RENDER_FINGERPRINT_VERSION = 1
 CACHE_VERSION = 1
 
@@ -44,21 +45,26 @@ def build_runtime_paths(
     input_path: Path,
     work_dir: Path | None = None,
     glossary_path: Path | None = None,
+    source_language: str = "Auto",
+    target_language: str = "Chinese",
+    fast_mode: bool = False,
 ) -> RuntimePaths:
     root_dir = work_dir or input_path.parent / ".subbake"
     safe_stem = _slugify(input_path.stem or "input")
     input_key = _stable_hash({"path": str(input_path.resolve())})[:12]
     run_dir = root_dir / "runs" / f"{safe_stem}-{input_key}"
+    language_pair = language_pair_slug(source_language, target_language)
+    translation_memory_mode = "fast" if fast_mode else "standard"
     return RuntimePaths(
         root_dir=root_dir,
         run_dir=run_dir,
         cache_dir=root_dir / "cache",
         state_path=run_dir / "run_state.json",
-        glossary_path=glossary_path or root_dir / "glossary.json",
+        glossary_path=glossary_path or root_dir / f"glossary.{language_pair}.json",
         failures_dir=run_dir / "failures",
         translated_batches_dir=run_dir / "translated_batches",
         reviewed_batches_dir=run_dir / "reviewed_batches",
-        translation_memory_path=root_dir / "translation_memory.json",
+        translation_memory_path=root_dir / f"translation_memory.v2.{language_pair}.{translation_memory_mode}.json",
     )
 
 
@@ -83,6 +89,7 @@ def build_translation_fingerprint(
         "provider": options.provider,
         "model": options.model,
         "batch_size": options.batch_size,
+        "fast_mode": options.fast_mode,
         "source_language": options.source_language,
         "target_language": options.target_language,
     }

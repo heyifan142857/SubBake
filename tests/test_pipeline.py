@@ -34,6 +34,10 @@ class QuietDashboard:
         if advance:
             self.completed_steps += 1
 
+    def mark_skipped(self, stage: str) -> None:
+        _ = stage
+        self.completed_steps += 1
+
     def add_usage(self, usage: Usage) -> None:
         self.usage.add(usage)
 
@@ -190,6 +194,33 @@ class AlwaysAttributeErrorBackend(LLMBackend):
 
     def check_credentials(self) -> tuple[bool, str]:
         return True, "ok"
+
+
+class FastModeBestEffortBackend(LLMBackend):
+    def __init__(self) -> None:
+        self.call_count = 0
+
+    def generate_json(self, messages: list[dict[str, str]]) -> tuple[dict, Usage]:
+        self.call_count += 1
+        prompt = "\n".join(message["content"] for message in messages)
+        batch_payload = json.loads(self._extract_between(prompt, "BATCH_JSON_START", "BATCH_JSON_END"))
+        first_line = batch_payload["lines"][0]
+        return (
+            {
+                "lines": [f"[FAST] {first_line['text']}"],
+                "summary": "fast-mode",
+                "glossary_updates": [],
+            },
+            Usage(input_tokens=4, output_tokens=4, total_tokens=8),
+        )
+
+    def check_credentials(self) -> tuple[bool, str]:
+        return True, "ok"
+
+    def _extract_between(self, text: str, start_marker: str, end_marker: str) -> str:
+        start_index = text.index(start_marker) + len(start_marker)
+        end_index = text.index(end_marker, start_index)
+        return text[start_index:end_index].strip()
 
 
 class PipelineTestCase(unittest.TestCase):
@@ -672,7 +703,128 @@ class PipelineTestCase(unittest.TestCase):
                 second_result.output_path.read_text(encoding="utf-8"),
                 "[SCRIPTED] Same line\n[SCRIPTED] Another line\n",
             )
-            tm_path = work_dir / "translation_memory.json"
+            tm_path = build_runtime_paths(
+                input_path=first_input,
+                work_dir=work_dir,
+                glossary_path=None,
+            ).translation_memory_path
             tm_data = json.loads(tm_path.read_text(encoding="utf-8"))
             self.assertIn("same line", tm_data)
             self.assertIn("another line", tm_data)
+
+    def test_fast_translation_memory_does_not_reuse_in_normal_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            work_dir = temp_path / "runtime"
+            first_input = temp_path / "episode-fast.txt"
+            second_input = temp_path / "episode-normal.txt"
+            first_input.write_text("Same line\n", encoding="utf-8")
+            second_input.write_text("Same line\n", encoding="utf-8")
+
+            fast_result = SubtitlePipeline(
+                backend=ScriptedBackend(),
+                options=PipelineOptions(
+                    input_path=first_input,
+                    batch_size=2,
+                    fast_mode=True,
+                    final_review=False,
+                    work_dir=work_dir,
+                ),
+                dashboard=QuietDashboard(),
+            ).run()
+
+            with self.assertRaises(RuntimeError):
+                SubtitlePipeline(
+                    backend=FailingBackend(),
+                    options=PipelineOptions(
+                        input_path=second_input,
+                        batch_size=2,
+                        fast_mode=False,
+                        final_review=False,
+                        work_dir=work_dir,
+                    ),
+                    dashboard=QuietDashboard(),
+                ).run()
+
+            fast_tm_path = build_runtime_paths(
+                input_path=first_input,
+                work_dir=work_dir,
+                glossary_path=None,
+                fast_mode=True,
+            ).translation_memory_path
+            normal_tm_path = build_runtime_paths(
+                input_path=first_input,
+                work_dir=work_dir,
+                glossary_path=None,
+                fast_mode=False,
+            ).translation_memory_path
+
+            self.assertTrue(fast_tm_path.exists())
+            self.assertFalse(normal_tm_path.exists())
+            self.assertIn("[SCRIPTED] Same line", fast_result.output_path.read_text(encoding="utf-8"))
+
+    def test_fast_mode_prefers_best_effort_completion_and_skips_review(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            input_path = temp_path / "fast.txt"
+            input_path.write_text("Alpha.\nBravo.\n", encoding="utf-8")
+            dashboard = QuietDashboard()
+            backend = FastModeBestEffortBackend()
+
+            result = SubtitlePipeline(
+                backend=backend,
+                options=PipelineOptions(
+                    input_path=input_path,
+                    batch_size=8,
+                    fast_mode=True,
+                    final_review=True,
+                    retries=0,
+                    work_dir=temp_path / "runtime",
+                ),
+                dashboard=dashboard,
+            ).run()
+
+            self.assertEqual(backend.call_count, 1)
+            self.assertEqual(result.review_batches, 0)
+            self.assertEqual(dashboard.total_steps, 6)
+            self.assertEqual(dashboard.completed_steps, dashboard.total_steps)
+            self.assertEqual(
+                result.output_path.read_text(encoding="utf-8"),
+                "[FAST] Alpha.\nBravo.\n",
+            )
+
+    def test_target_language_alias_avoids_cross_language_translation_memory_reuse(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            work_dir = temp_path / "runtime"
+            first_input = temp_path / "episode-zh.txt"
+            second_input = temp_path / "episode-en.txt"
+            first_input.write_text("Same line\n", encoding="utf-8")
+            second_input.write_text("Same line\n", encoding="utf-8")
+
+            first_result = SubtitlePipeline(
+                backend=build_backend("mock", "mock-zh"),
+                options=PipelineOptions(
+                    input_path=first_input,
+                    batch_size=2,
+                    final_review=False,
+                    target_language="zh",
+                    work_dir=work_dir,
+                ),
+                dashboard=QuietDashboard(),
+            ).run()
+
+            second_result = SubtitlePipeline(
+                backend=build_backend("mock", "mock-zh"),
+                options=PipelineOptions(
+                    input_path=second_input,
+                    batch_size=2,
+                    final_review=False,
+                    target_language="en",
+                    work_dir=work_dir,
+                ),
+                dashboard=QuietDashboard(),
+            ).run()
+
+            self.assertIn("[MOCK-ZH] Same line", first_result.output_path.read_text(encoding="utf-8"))
+            self.assertIn("[MOCK-EN] Same line", second_result.output_path.read_text(encoding="utf-8"))

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 import re
 from time import perf_counter
@@ -18,6 +18,7 @@ from subbake.entities import (
     TranslationLine,
     Usage,
 )
+from subbake.languages import normalize_language_name
 from subbake.memory import ContextMemory
 from subbake.models.base_model import (
     BackendRequestError,
@@ -68,14 +69,21 @@ class ReviewBatchPlan:
 class SubtitlePipeline:
     def __init__(self, backend: LLMBackend | None, options: PipelineOptions, dashboard: Dashboard | None = None) -> None:
         self.backend = backend
-        self.options = options
+        self.options = replace(
+            options,
+            source_language=normalize_language_name(options.source_language, allow_auto=True),
+            target_language=normalize_language_name(options.target_language),
+        )
         self.memory = ContextMemory()
         self.dashboard = dashboard or Dashboard()
         self.cache_hits = 0
         self.runtime_paths = build_runtime_paths(
-            input_path=options.input_path,
-            work_dir=options.work_dir,
-            glossary_path=options.glossary_path,
+            input_path=self.options.input_path,
+            work_dir=self.options.work_dir,
+            glossary_path=self.options.glossary_path,
+            source_language=self.options.source_language,
+            target_language=self.options.target_language,
+            fast_mode=self.options.fast_mode,
         )
         self.cache_store = CacheStore(self.runtime_paths.cache_dir)
         self.glossary_store = GlossaryStore(self.runtime_paths.glossary_path)
@@ -131,16 +139,18 @@ class SubtitlePipeline:
             translated_segments = self._translate_document(translation_batches, resume)
 
             review_plan: list[ReviewBatchPlan] = []
-            if self.options.final_review and translated_segments:
+            if self.options.final_review and not self.options.fast_mode and translated_segments:
                 review_plan = self._build_review_plan(translation_batches, translated_segments)
+            review_progress_steps = len(review_plan) if review_plan else 1
             self.dashboard.set_total_steps(
-                2 + len(translation_batches) + 1 + len(review_plan) + 1
+                2 + len(translation_batches) + 1 + review_progress_steps + 1
             )
-            self._restore_resume_progress(
-                resume=resume,
-                total_translation_batches=len(translation_batches),
-                review_batches=len(review_plan),
-            )
+            if self._has_resume_progress(resume):
+                self._restore_resume_progress(
+                    resume=resume,
+                    total_translation_batches=len(translation_batches),
+                    review_batches=len(review_plan),
+                )
 
             self.dashboard.mark_running("VALIDATE")
             validate_full_alignment(document.segments, translated_segments)
@@ -160,6 +170,8 @@ class SubtitlePipeline:
                     resume=resume,
                 )
                 validate_full_alignment(document.segments, reviewed_segments)
+            else:
+                self.dashboard.mark_skipped("FINAL_REVIEW")
 
             output_segments = self._build_output_segments(document, reviewed_segments)
             self.dashboard.mark_running("WRITE_OUTPUT")
@@ -310,6 +322,7 @@ class SubtitlePipeline:
                     memory=self.memory,
                     source_language=self.options.source_language,
                     target_language=self.options.target_language,
+                    fast_mode=self.options.fast_mode,
                 )
                 if last_error is not None:
                     messages.append(
@@ -351,6 +364,23 @@ class SubtitlePipeline:
                 return result, usage
             except Exception as exc:
                 last_error = exc
+                fast_mode_result = self._fast_mode_translation_result(
+                    batch_segments=pending_segments,
+                    payload=payload,
+                )
+                if fast_mode_result is not None:
+                    return (
+                        BatchTranslationResult(
+                            lines=self._merge_translation_lines(
+                                batch_segments,
+                                tm_matches,
+                                fast_mode_result.lines,
+                            ),
+                            summary=fast_mode_result.summary,
+                            glossary_updates=fast_mode_result.glossary_updates,
+                        ),
+                        usage,
+                    )
                 attempt_log = {
                     "attempt": attempt,
                     "cached": cached,
@@ -442,7 +472,102 @@ class SubtitlePipeline:
         exc: Exception,
         batch_segments: list[SubtitleSegment],
     ) -> bool:
+        if self.options.fast_mode:
+            return False
         return isinstance(exc, ValidationError) and len(batch_segments) > 1
+
+    def _fast_mode_translation_result(
+        self,
+        *,
+        batch_segments: list[SubtitleSegment],
+        payload: dict | None,
+    ) -> BatchTranslationResult | None:
+        if not self.options.fast_mode or not isinstance(payload, dict):
+            return None
+        raw_lines = payload.get("lines")
+        if not isinstance(raw_lines, list):
+            return None
+
+        glossary_updates: list[GlossaryEntry] = []
+        try:
+            glossary_updates = parse_glossary_entries(payload.get("glossary_updates", []))
+        except Exception:
+            glossary_updates = []
+
+        return BatchTranslationResult(
+            lines=self._best_effort_translation_lines(batch_segments, raw_lines),
+            summary=str(payload.get("summary", "")).strip(),
+            glossary_updates=glossary_updates,
+        )
+
+    def _best_effort_translation_lines(
+        self,
+        source_segments: list[SubtitleSegment],
+        raw_lines: list[object],
+    ) -> list[TranslationLine]:
+        candidates = [
+            candidate
+            for candidate in (
+                self._coerce_best_effort_translation_candidate(item)
+                for item in raw_lines
+            )
+            if candidate is not None
+        ]
+        used_indexes: set[int] = set()
+        resolved: list[TranslationLine] = []
+
+        for source_segment in source_segments:
+            translation_text = self._pop_best_effort_translation(candidates, used_indexes, source_segment.id)
+            if not source_segment.text.strip():
+                translation_text = ""
+            elif not translation_text:
+                translation_text = source_segment.text
+            resolved.append(
+                TranslationLine(
+                    id=source_segment.id,
+                    translation=translation_text,
+                )
+            )
+        return resolved
+
+    def _coerce_best_effort_translation_candidate(
+        self,
+        item: object,
+    ) -> tuple[str | None, str] | None:
+        if isinstance(item, dict):
+            candidate_id = item.get("id")
+            translation = item.get("translation")
+            if translation is None:
+                translation = item.get("text")
+            if translation is None:
+                translation = item.get("target")
+            if translation is None:
+                return None
+            return (
+                str(candidate_id).strip() if candidate_id is not None else None,
+                str(translation).strip(),
+            )
+        if isinstance(item, str):
+            return None, item.strip()
+        return None
+
+    def _pop_best_effort_translation(
+        self,
+        candidates: list[tuple[str | None, str]],
+        used_indexes: set[int],
+        source_id: str,
+    ) -> str:
+        for index, (candidate_id, translation) in enumerate(candidates):
+            if index in used_indexes or candidate_id != source_id:
+                continue
+            used_indexes.add(index)
+            return translation
+        for index, (_, translation) in enumerate(candidates):
+            if index in used_indexes:
+                continue
+            used_indexes.add(index)
+            return translation
+        return ""
 
     def _split_translation_batch(
         self,
@@ -953,6 +1078,12 @@ class SubtitlePipeline:
 
     def _smart_batch_limits(self, max_segments: int | None = None) -> tuple[int, int, int, int]:
         max_segments = max_segments or self.options.batch_size
+        if self.options.fast_mode:
+            target_chars = max(480, min(2600, max_segments * 48))
+            hard_chars = max(target_chars + max(180, target_chars // 2), target_chars)
+            target_tokens = max(160, min(960, max_segments * 12))
+            hard_tokens = max(target_tokens + max(60, target_tokens // 2), target_tokens)
+            return target_chars, hard_chars, target_tokens, hard_tokens
         target_chars = max(320, min(1800, max_segments * 36))
         hard_chars = max(target_chars + max(120, target_chars // 3), target_chars)
         target_tokens = max(120, min(720, max_segments * 10))
@@ -961,6 +1092,8 @@ class SubtitlePipeline:
 
     def _adaptive_batch_segment_limit(self, batch: list[SubtitleSegment]) -> int:
         base_limit = self.options.batch_size
+        if self.options.fast_mode:
+            return base_limit
         if base_limit <= 8 or not batch:
             return base_limit
 
@@ -1266,6 +1399,13 @@ class SubtitlePipeline:
                 validation_completed=resume.validation_completed or resume.review_batches_completed > 0,
                 review_batches=review_batches,
             )
+        )
+
+    def _has_resume_progress(self, resume: ResumeSnapshot) -> bool:
+        return (
+            resume.translation_batches_completed > 0
+            or resume.review_batches_completed > 0
+            or resume.validation_completed
         )
 
     def _load_persistent_glossary(self) -> None:

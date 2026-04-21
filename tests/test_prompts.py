@@ -95,6 +95,26 @@ class PromptTestCase(unittest.TestCase):
             [{"id": "1", "source": "Hello Alice.", "translation": "你好 Alice。"}],
         )
 
+    def test_fast_translation_prompt_uses_lighter_context(self) -> None:
+        memory = ContextMemory()
+        memory.recent_summaries = ["summary"]
+        memory.glossary = {"Alice": "爱丽丝"}
+
+        messages = build_translation_messages(
+            batch_segments=[SubtitleSegment(id="1", text="Hello Alice.")],
+            memory=memory,
+            source_language="English",
+            target_language="Japanese",
+            fast_mode=True,
+        )
+
+        user_prompt = messages[1]["content"]
+        context = self._extract_json_block(user_prompt, "CONTEXT_JSON_START", "CONTEXT_JSON_END")
+
+        self.assertEqual(context, {"src": "English", "tgt": "Japanese"})
+        self.assertIn("Best-effort speed mode", user_prompt)
+        self.assertIn("Translate into Japanese.", messages[0]["content"])
+
     def _extract_json_block(self, text: str, start_marker: str, end_marker: str) -> dict:
         start_index = text.index(start_marker) + len(start_marker)
         end_index = text.index(end_marker, start_index)

@@ -6,7 +6,7 @@ from subbake.entities import GlossaryEntry
 
 
 DEFAULT_STYLE_RULES = [
-    "Use natural, idiomatic Chinese.",
+    "Use natural, idiomatic target-language phrasing.",
     "Preserve tone, humor, emotion, and profanity where present.",
     "Keep subtitles concise and easy to read on screen.",
     "Do not merge or drop subtitle entries.",

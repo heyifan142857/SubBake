@@ -4,16 +4,26 @@ import shutil
 from pathlib import Path
 
 import typer
+from click.core import ParameterSource
 from rich.console import Console
 
 from subbake import __version__
+from subbake.config import (
+    CHECK_KEY_CONFIG_KEYS,
+    TRANSLATE_CONFIG_KEYS,
+    discover_config_path,
+    format_config_selection,
+    load_app_config,
+    resolve_command_config,
+)
 from subbake.entities import DEFAULT_BATCH_SIZE, PipelineOptions
+from subbake.languages import normalize_language_name
 from subbake.models import build_backend
 from subbake.pipeline import SubtitlePipeline
 from subbake.storage import build_runtime_paths
 from subbake.ui import Dashboard
 
-APP_HELP = """LLM subtitle translation CLI with Chinese as the default target language.
+APP_HELP = """LLM subtitle translation CLI with Chinese as the default target language, or another target such as en / ja / fr.
 
 Common commands:
   sbake translate input.srt --provider openai
@@ -29,7 +39,11 @@ Common options for `sbake translate`:
   --base-url       Set the OpenAI-compatible API base URL
   --api-key        Pass the API key directly
   --batch-size     Batch size, default is 30
+  --fast           Prioritize speed and successful completion over maximum quality
   --bilingual      Output bilingual subtitles
+  --target-language  Target language, for example Chinese / en / ja / fr
+  --config         Use a specific subbake.toml file
+  --profile        Choose a named config profile
   --dry-run        Parse and plan batches without calling the model
   --resume         Resume from run_state.json when available
   --cache          Reuse cached responses for identical prompts
@@ -83,23 +97,83 @@ def main(
     """subbake CLI."""
 
 
+def _load_command_config(
+    *,
+    explicit_config_path: Path | None,
+    profile: str | None,
+    allowed_keys: set[str],
+) -> tuple[dict[str, object], object | None]:
+    config_path = explicit_config_path
+    if config_path is None:
+        config_path = discover_config_path()
+    if config_path is None:
+        if profile is not None:
+            raise ValueError("No subbake.toml file was found for the requested --profile.")
+        return {}, None
+
+    config = load_app_config(config_path)
+    return resolve_command_config(
+        config,
+        profile=profile,
+        allowed_keys=allowed_keys,
+    )
+
+
+def _configured_value(
+    ctx: typer.Context,
+    parameter_name: str,
+    current_value: object,
+    config_values: dict[str, object],
+) -> object:
+    if ctx.get_parameter_source(parameter_name) == ParameterSource.COMMANDLINE:
+        return current_value
+    return config_values.get(parameter_name, current_value)
+
+
 @app.command()
 def translate(
+    ctx: typer.Context,
     input_path: Path = typer.Argument(..., exists=True, dir_okay=False, help="Input .srt, .vtt, or .txt file."),
     output: Path | None = typer.Option(None, "--output", "-o", dir_okay=False, help="Output file path."),
     provider: str = typer.Option("mock", "--provider", help="LLM provider: mock, openai, anthropic."),
     model: str = typer.Option("mock-zh", "--model", help="Model name for the selected provider."),
     api_key: str | None = typer.Option(None, "--api-key", help="API key override for the provider."),
     base_url: str | None = typer.Option(None, "--base-url", help="OpenAI-compatible API base URL."),
+    config: Path | None = typer.Option(
+        None,
+        "--config",
+        dir_okay=False,
+        exists=True,
+        resolve_path=True,
+        help="Path to subbake.toml. By default sbake auto-discovers subbake.toml upward from the current directory.",
+    ),
+    profile: str | None = typer.Option(
+        None,
+        "--profile",
+        help="Named config profile to use when subbake.toml defines multiple profiles.",
+    ),
     batch_size: int = typer.Option(
         DEFAULT_BATCH_SIZE,
         "--batch-size",
         min=1,
         help="Subtitle entries per translation batch.",
     ),
+    fast: bool = typer.Option(
+        False,
+        "--fast",
+        help="Prioritize speed and successful completion over best quality by using lighter prompts and best-effort recovery.",
+    ),
     bilingual: bool = typer.Option(False, "--bilingual", help="Emit bilingual subtitles."),
-    source_language: str = typer.Option("Auto", "--source-language", help="Source language hint."),
-    target_language: str = typer.Option("Chinese", "--target-language", help="Target language."),
+    source_language: str = typer.Option(
+        "Auto",
+        "--source-language",
+        help="Source language hint. Supports common aliases like auto, en, ja, and zh.",
+    ),
+    target_language: str = typer.Option(
+        "Chinese",
+        "--target-language",
+        help="Target language. Supports common aliases like zh, en, ja, ko, fr, es, and de.",
+    ),
     retries: int = typer.Option(2, "--retries", min=0, help="Retries for malformed model output."),
     final_review: bool = typer.Option(
         True,
@@ -115,28 +189,55 @@ def translate(
 ) -> None:
     """Translate subtitles while preserving subtitle structure."""
 
-    options = PipelineOptions(
-        input_path=input_path,
-        output_path=output,
-        provider=provider,
-        model=model,
-        batch_size=batch_size,
-        bilingual=bilingual,
-        source_language=source_language,
-        target_language=target_language,
-        retries=retries,
-        final_review=final_review,
-        timeout_seconds=timeout,
-        api_key=api_key,
-        base_url=base_url,
-        dry_run=dry_run,
-        resume=resume,
-        use_cache=cache,
-        work_dir=work_dir,
-        glossary_path=glossary_path,
-    )
-
     try:
+        config_values, config_selection = _load_command_config(
+            explicit_config_path=config,
+            profile=profile,
+            allowed_keys=TRANSLATE_CONFIG_KEYS,
+        )
+        provider = _configured_value(ctx, "provider", provider, config_values)
+        model = _configured_value(ctx, "model", model, config_values)
+        api_key = _configured_value(ctx, "api_key", api_key, config_values)
+        base_url = _configured_value(ctx, "base_url", base_url, config_values)
+        batch_size = _configured_value(ctx, "batch_size", batch_size, config_values)
+        fast = _configured_value(ctx, "fast", fast, config_values)
+        bilingual = _configured_value(ctx, "bilingual", bilingual, config_values)
+        source_language = _configured_value(ctx, "source_language", source_language, config_values)
+        target_language = _configured_value(ctx, "target_language", target_language, config_values)
+        retries = _configured_value(ctx, "retries", retries, config_values)
+        final_review = _configured_value(ctx, "final_review", final_review, config_values)
+        timeout = _configured_value(ctx, "timeout", timeout, config_values)
+        dry_run = _configured_value(ctx, "dry_run", dry_run, config_values)
+        resume = _configured_value(ctx, "resume", resume, config_values)
+        cache = _configured_value(ctx, "cache", cache, config_values)
+        work_dir = _configured_value(ctx, "work_dir", work_dir, config_values)
+        glossary_path = _configured_value(ctx, "glossary_path", glossary_path, config_values)
+
+        normalized_source_language = normalize_language_name(source_language, allow_auto=True)
+        normalized_target_language = normalize_language_name(target_language)
+
+        options = PipelineOptions(
+            input_path=input_path,
+            output_path=output,
+            provider=provider,
+            model=model,
+            batch_size=batch_size,
+            fast_mode=fast,
+            bilingual=bilingual,
+            source_language=normalized_source_language,
+            target_language=normalized_target_language,
+            retries=retries,
+            final_review=final_review and not fast,
+            timeout_seconds=timeout,
+            api_key=api_key,
+            base_url=base_url,
+            dry_run=dry_run,
+            resume=resume,
+            use_cache=cache,
+            work_dir=work_dir,
+            glossary_path=glossary_path,
+        )
+
         backend = None
         if not dry_run:
             backend = build_backend(
@@ -175,6 +276,9 @@ def translate(
             console.print(f"[bold green]Glossary:[/bold green] {result.glossary_path}")
         if result.state_path is not None:
             console.print(f"[bold green]Run state:[/bold green] {result.state_path}")
+        config_description = format_config_selection(config_selection)
+        if config_description is not None:
+            console.print(f"[bold green]Config:[/bold green] {config_description}")
         return
 
     console.print(f"[bold green]Output:[/bold green] {result.output_path}")
@@ -186,6 +290,12 @@ def translate(
         "[bold green]Batches:[/bold green] "
         f"{result.batches_translated} translated, {result.review_batches} reviewed"
     )
+    config_description = format_config_selection(config_selection)
+    if config_description is not None:
+        console.print(f"[bold green]Config:[/bold green] {config_description}")
+    if fast:
+        console.print("[bold green]Mode:[/bold green] fast")
+    console.print(f"[bold green]Target language:[/bold green] {normalized_target_language}")
     if result.cache_hits:
         console.print(f"[bold green]Cache hits:[/bold green] {result.cache_hits}")
     if result.glossary_path is not None:
@@ -196,6 +306,7 @@ def translate(
 
 @app.command("check-key")
 def check_key(
+    ctx: typer.Context,
     provider: str = typer.Option("openai", "--provider", help="LLM provider: mock, openai, anthropic."),
     model: str = typer.Option(
         "check-only",
@@ -204,11 +315,35 @@ def check_key(
     ),
     api_key: str | None = typer.Option(None, "--api-key", help="API key override for the provider."),
     base_url: str | None = typer.Option(None, "--base-url", help="OpenAI-compatible API base URL."),
+    config: Path | None = typer.Option(
+        None,
+        "--config",
+        dir_okay=False,
+        exists=True,
+        resolve_path=True,
+        help="Path to subbake.toml. By default sbake auto-discovers subbake.toml upward from the current directory.",
+    ),
+    profile: str | None = typer.Option(
+        None,
+        "--profile",
+        help="Named config profile to use when subbake.toml defines multiple profiles.",
+    ),
     timeout: float = typer.Option(30.0, "--timeout", min=1.0, help="Credential check timeout in seconds."),
 ) -> None:
     """Check whether the configured provider credentials are accepted."""
 
     try:
+        config_values, config_selection = _load_command_config(
+            explicit_config_path=config,
+            profile=profile,
+            allowed_keys=CHECK_KEY_CONFIG_KEYS,
+        )
+        provider = _configured_value(ctx, "provider", provider, config_values)
+        model = _configured_value(ctx, "model", model, config_values)
+        api_key = _configured_value(ctx, "api_key", api_key, config_values)
+        base_url = _configured_value(ctx, "base_url", base_url, config_values)
+        timeout = _configured_value(ctx, "timeout", timeout, config_values)
+
         backend = build_backend(
             provider=provider,
             model=model,
@@ -223,10 +358,16 @@ def check_key(
 
     if valid:
         console.print("[bold green]Credential check passed.[/bold green]")
+        config_description = format_config_selection(config_selection)
+        if config_description is not None:
+            console.print(f"[bold green]Config:[/bold green] {config_description}")
         console.print(message)
         return
 
     console.print("[bold red]Credential check failed.[/bold red]")
+    config_description = format_config_selection(config_selection)
+    if config_description is not None:
+        console.print(f"[bold green]Config:[/bold green] {config_description}")
     console.print(message)
     raise typer.Exit(code=1)
 
@@ -279,7 +420,14 @@ def clean(
     if remove_cache:
         _remove_path(runtime_root / "cache", removed, missing, "cache")
     if remove_glossary:
-        _remove_path(glossary_file, removed, missing, "glossary")
+        _remove_globbed_files(
+            runtime_root=runtime_root,
+            pattern="glossary*.json",
+            fallback_path=glossary_file,
+            removed=removed,
+            missing=missing,
+            label="glossary",
+        )
 
     if target.is_dir() or work_dir is not None or all:
         _prune_empty_runtime_root(runtime_root)
@@ -347,6 +495,27 @@ def _remove_path(
     else:
         path.unlink()
     removed.append(f"{label}: {path}")
+
+
+def _remove_globbed_files(
+    *,
+    runtime_root: Path,
+    pattern: str,
+    fallback_path: Path,
+    removed: list[str],
+    missing: list[str],
+    label: str,
+) -> None:
+    matches = sorted(
+        path
+        for path in runtime_root.glob(pattern)
+        if path.is_file()
+    )
+    if not matches:
+        missing.append(f"{label}: {fallback_path}")
+        return
+    for path in matches:
+        _remove_path(path, removed, missing, label)
 
 
 def _prune_empty_runtime_root(runtime_root: Path) -> None:

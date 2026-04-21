@@ -29,30 +29,44 @@ def build_translation_messages(
     memory: ContextMemory,
     source_language: str,
     target_language: str,
+    fast_mode: bool = False,
 ) -> list[dict[str, str]]:
     batch_texts = [segment.text for segment in batch_segments if segment.text]
     context_payload = {
         "src": source_language,
         "tgt": target_language,
-        "rules": list(memory.style_rules),
     }
+    if not fast_mode:
+        context_payload["rules"] = list(memory.style_rules)
     structure_notes = _translation_structure_notes(batch_segments)
     if structure_notes:
         context_payload["structure_notes"] = structure_notes
-    recent = list(memory.recent_summaries[-memory.max_summaries :])
-    if recent:
-        context_payload["recent"] = recent
-    glossary = select_relevant_glossary(memory.glossary, batch_texts)
-    if glossary:
-        context_payload["glossary"] = glossary
+    if not fast_mode:
+        recent = list(memory.recent_summaries[-memory.max_summaries :])
+        if recent:
+            context_payload["recent"] = recent
+        glossary = select_relevant_glossary(memory.glossary, batch_texts)
+        if glossary:
+            context_payload["glossary"] = glossary
 
-    system_prompt = (
-        "You are a professional subtitle translator.\n"
-        "Return valid JSON only.\n"
-        "Keep subtitle order, count, and ids exact.\n"
-        "Never merge, drop, or insert subtitle entries even when the spoken sentence spans multiple subtitle lines.\n"
-        "Every non-empty source entry must produce one non-empty translated entry with the same id."
-    )
+    if fast_mode:
+        system_prompt = (
+            "You are a fast subtitle translator.\n"
+            "Return valid JSON only.\n"
+            f"Translate into {target_language}.\n"
+            "Prioritize finishing the batch while keeping subtitle order, count, and ids exact.\n"
+            "Never merge, drop, or insert subtitle entries even when the spoken sentence spans multiple subtitle lines.\n"
+            "Every non-empty source entry must produce one non-empty translated entry with the same id."
+        )
+    else:
+        system_prompt = (
+            "You are a professional subtitle translator.\n"
+            "Return valid JSON only.\n"
+            f"Translate into {target_language}.\n"
+            "Keep subtitle order, count, and ids exact.\n"
+            "Never merge, drop, or insert subtitle entries even when the spoken sentence spans multiple subtitle lines.\n"
+            "Every non-empty source entry must produce one non-empty translated entry with the same id."
+        )
     batch_payload = {
         "lines": [
             {
@@ -62,11 +76,16 @@ def build_translation_messages(
             for segment in batch_segments
         ]
     }
+    speed_note = (
+        "Best-effort speed mode: if a fragment is unclear, still provide a short plausible translation for that id instead of leaving it blank.\n"
+        if fast_mode
+        else ""
+    )
     user_prompt = (
         "TASK_START\n"
         "translate_subtitles\n"
         "TASK_END\n"
-        "Translate each line into the target language.\n"
+        f"Translate each line into {target_language}.\n"
         "Preserve line count, order, and ids exactly.\n"
         "Even if one spoken sentence spans multiple subtitle entries, keep each subtitle entry separate.\n"
         "Never merge neighboring lines to complete a sentence.\n"
@@ -75,6 +94,7 @@ def build_translation_messages(
         "Do not absorb a short fragment into the previous or next entry.\n"
         "Keep blank lines blank. Keep tone, slang, and profanity intact.\n"
         "Favor natural subtitle phrasing over literal wording.\n"
+        f"{speed_note}"
         'Return JSON only with keys "lines", "summary", and "glossary_updates".\n'
         "CONTEXT_JSON_START\n"
         f"{_compact_json(context_payload)}\n"
@@ -105,6 +125,7 @@ def build_review_messages(
     system_prompt = (
         "You are performing a targeted subtitle QA review.\n"
         "Return valid JSON only.\n"
+        f"Review {target_language} subtitles.\n"
         "Only fix terminology, consistency, and readability issues without changing the number of entries."
     )
     review_payload = {

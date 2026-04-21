@@ -98,6 +98,32 @@ class DashboardTestCase(unittest.TestCase):
         self.assertIn("TRANSLATE_BATCH 36/87", rendered)
         self.assertIn("FINAL_REVIEW 12/24", rendered)
 
+    def test_timeline_shows_skipped_stage_label(self) -> None:
+        console = Console(record=True, width=120)
+        dashboard = Dashboard(console=console)
+        dashboard.live.refresh = lambda: None
+
+        dashboard.stage_states["LOAD_FILE"] = "done"
+        dashboard.stage_states["PARSE"] = "done"
+        dashboard.stage_states["TRANSLATE_BATCH"] = "done"
+        dashboard.stage_states["VALIDATE"] = "done"
+        dashboard.mark_skipped("FINAL_REVIEW")
+
+        with patch("subbake.ui.dashboard.monotonic", return_value=10.0):
+            console.print(dashboard.render())
+
+        rendered = console.export_text()
+        self.assertIn("FINAL_REVIEW SKIPPED", rendered)
+
+    def test_skipped_stage_advances_progress(self) -> None:
+        self.dashboard.set_total_steps(6)
+        self.dashboard.restore_progress(4)
+
+        self.dashboard.mark_skipped("FINAL_REVIEW")
+
+        self.assertEqual(self.dashboard.completed_steps, 5)
+        self.assertIn(" 83.3%", self.dashboard._progress_bar())
+
     def _duration_to_seconds(self, value: str) -> int:
         if value.endswith("s") and "m" not in value and "h" not in value:
             return int(value[:-1])

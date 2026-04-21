@@ -21,10 +21,15 @@ class CLITestCase(unittest.TestCase):
         output = self._strip_ansi(result.stdout)
 
         self.assertEqual(result.exit_code, 0)
-        self.assertIn("LLM subtitle translation CLI with Chinese as the default target language.", output)
+        self.assertIn("LLM subtitle translation CLI with Chinese as the default target language", output)
+        self.assertIn("another target such as en / ja / fr.", output)
         self.assertIn("Common commands:", output)
         self.assertIn("sbake translate input.srt", output)
         self.assertIn("--provider", output)
+        self.assertIn("--fast", output)
+        self.assertIn("--target-language", output)
+        self.assertIn("--config", output)
+        self.assertIn("--profile", output)
         self.assertIn("sbake check-key", output)
         self.assertIn("sbake clean input.srt", output)
 
@@ -67,6 +72,98 @@ class CLITestCase(unittest.TestCase):
 
             self.assertEqual(result.exit_code, 0)
             self.assertFalse(runtime_root.exists())
+
+    def test_translate_uses_auto_discovered_config_profile(self) -> None:
+        with self.runner.isolated_filesystem():
+            Path("subbake.toml").write_text(
+                'default_profile = "mock_en"\n\n'
+                "[defaults]\n"
+                "final_review = false\n"
+                "resume = false\n"
+                "cache = false\n\n"
+                "[profiles.mock_en]\n"
+                'provider = "mock"\n'
+                'model = "mock-zh"\n'
+                'target_language = "en"\n',
+                encoding="utf-8",
+            )
+            Path("clip.txt").write_text("hello\n", encoding="utf-8")
+
+            result = self.runner.invoke(app, ["translate", "clip.txt"])
+
+            self.assertEqual(result.exit_code, 0)
+            self.assertIn("[MOCK-EN] hello", Path("clip.translated.txt").read_text(encoding="utf-8"))
+            output = self._strip_ansi(result.stdout)
+            self.assertIn("Config:", output)
+            self.assertIn("profile mock_en", output)
+
+    def test_translate_command_line_overrides_config_values(self) -> None:
+        with self.runner.isolated_filesystem():
+            Path("subbake.toml").write_text(
+                'default_profile = "mock_en"\n\n'
+                "[profiles.mock_en]\n"
+                'provider = "mock"\n'
+                'model = "mock-zh"\n'
+                'target_language = "en"\n'
+                "final_review = false\n",
+                encoding="utf-8",
+            )
+            Path("clip.txt").write_text("hello\n", encoding="utf-8")
+
+            result = self.runner.invoke(
+                app,
+                ["translate", "clip.txt", "--target-language", "zh"],
+            )
+
+            self.assertEqual(result.exit_code, 0)
+            self.assertIn("[MOCK-ZH] hello", Path("clip.translated.txt").read_text(encoding="utf-8"))
+
+    def test_translate_requires_default_profile_when_multiple_profiles_exist(self) -> None:
+        with self.runner.isolated_filesystem():
+            Path("subbake.toml").write_text(
+                "[profiles.mock_en]\n"
+                'provider = "mock"\n'
+                'model = "mock-zh"\n'
+                'target_language = "en"\n\n'
+                "[profiles.mock_zh]\n"
+                'provider = "mock"\n'
+                'model = "mock-zh"\n'
+                'target_language = "zh"\n',
+                encoding="utf-8",
+            )
+            Path("clip.txt").write_text("hello\n", encoding="utf-8")
+
+            result = self.runner.invoke(app, ["translate", "clip.txt"])
+            output = self._strip_ansi(result.stdout)
+
+            self.assertEqual(result.exit_code, 1)
+            self.assertIn("Multiple config profiles are defined", output)
+            self.assertIn("--profile", output)
+
+    def test_translate_profile_option_selects_named_profile(self) -> None:
+        with self.runner.isolated_filesystem():
+            Path("subbake.toml").write_text(
+                "[profiles.mock_en]\n"
+                'provider = "mock"\n'
+                'model = "mock-zh"\n'
+                'target_language = "en"\n'
+                "final_review = false\n\n"
+                "[profiles.mock_zh]\n"
+                'provider = "mock"\n'
+                'model = "mock-zh"\n'
+                'target_language = "zh"\n'
+                "final_review = false\n",
+                encoding="utf-8",
+            )
+            Path("clip.txt").write_text("hello\n", encoding="utf-8")
+
+            result = self.runner.invoke(
+                app,
+                ["translate", "clip.txt", "--profile", "mock_zh"],
+            )
+
+            self.assertEqual(result.exit_code, 0)
+            self.assertIn("[MOCK-ZH] hello", Path("clip.translated.txt").read_text(encoding="utf-8"))
 
     def _strip_ansi(self, value: str) -> str:
         return re.sub(r"\x1b\[[0-9;]*m", "", value)
