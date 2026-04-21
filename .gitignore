@@ -12,4 +12,3 @@ uv.lock
 *.bilingual.txt
 build/
 dist/
-wiki/

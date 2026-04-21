@@ -4,9 +4,9 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "subbake"
-version = "0.2.0"
+version = "0.3.0"
 description = "LLM-powered subtitle translation CLI with batch memory and review passes."
-readme = "README.md"
+readme = "README-pypi.md"
 requires-python = ">=3.11"
 license = "MIT"
 license-files = ["LICENSE"]

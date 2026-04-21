@@ -4,6 +4,7 @@ This file tracks notable changes for each release.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-04-21
 ### Added
 
 - A `--fast` mode that uses lighter prompts, skips final review, and prefers best-effort completion when model structure is unstable.
