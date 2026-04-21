@@ -424,18 +424,77 @@ def parse_translation_lines(items: list[dict]) -> list[TranslationLine]:
     return lines
 
 
-def parse_glossary_entries(items: list[dict] | dict[str, str]) -> list[GlossaryEntry]:
+def parse_glossary_entries(items: list[dict | str] | dict[str, str]) -> list[GlossaryEntry]:
     if isinstance(items, dict):
         iterable = [{"source": key, "target": value} for key, value in items.items()]
     else:
         iterable = items
     entries: list[GlossaryEntry] = []
     for item in iterable:
+        entry = _coerce_glossary_entry(item)
+        if entry is not None:
+            entries.append(entry)
+    return entries
+
+
+def _coerce_glossary_entry(item: dict | str) -> GlossaryEntry | None:
+    if isinstance(item, dict):
         source = str(item.get("source", "")).strip()
         target = str(item.get("target", "")).strip()
         if source and target:
-            entries.append(GlossaryEntry(source=source, target=target))
-    return entries
+            return GlossaryEntry(source=source, target=target)
+        return None
+    if isinstance(item, str):
+        return _parse_glossary_string(item)
+    return None
+
+
+def _parse_glossary_string(text: str) -> GlossaryEntry | None:
+    stripped = text.strip()
+    if not stripped:
+        return None
+
+    parenthetical = re.match(
+        r"^(?P<target>[^()]+?)\s*\((?P<source>[^()]+)\)\s*(?:[:：-].*)?$",
+        stripped,
+    )
+    if parenthetical is not None:
+        source = parenthetical.group("source").strip()
+        target = parenthetical.group("target").strip(" -–—:：")
+        if source and target:
+            return GlossaryEntry(source=source, target=target)
+
+    for delimiter in (" - ", " – ", " — ", ": ", "："):
+        if delimiter not in stripped:
+            continue
+        left, right = stripped.split(delimiter, 1)
+        source, target = _order_glossary_pair(left.strip(), right.strip())
+        if source and target:
+            return GlossaryEntry(source=source, target=target)
+    return None
+
+
+def _order_glossary_pair(left: str, right: str) -> tuple[str, str]:
+    if not left or not right:
+        return "", ""
+
+    left_has_latin = _contains_latin(left)
+    right_has_latin = _contains_latin(right)
+    left_has_cjk = _contains_cjk(left)
+    right_has_cjk = _contains_cjk(right)
+    if left_has_latin and right_has_cjk and not right_has_latin:
+        return left, right
+    if right_has_latin and left_has_cjk and not left_has_latin:
+        return right, left
+    return left, right
+
+
+def _contains_latin(text: str) -> bool:
+    return re.search(r"[A-Za-z]", text) is not None
+
+
+def _contains_cjk(text: str) -> bool:
+    return re.search(r"[\u4e00-\u9fff]", text) is not None
 
 
 def _extract_between(text: str, start_marker: str, end_marker: str) -> str:

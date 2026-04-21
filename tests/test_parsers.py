@@ -91,3 +91,35 @@ class ParserTestCase(unittest.TestCase):
             [(segment.id, segment.text) for segment in document.segments],
             [("1", "alpha"), ("2", ""), ("3", "beta")],
         )
+
+    def test_parse_srt_document_accepts_missing_indices_and_preserves_settings(self) -> None:
+        content = (
+            "00:00:01,000 --> 00:00:03,000 X1:10 X2:20 Y1:30 Y2:40\n"
+            "<i>Hello</i>\n\n"
+            "2\n"
+            "00:00:04,000-->00:00:06,000\n"
+            "{\\an8}World\n"
+        )
+        expected_rendered = (
+            "1\n"
+            "00:00:01,000 --> 00:00:03,000 X1:10 X2:20 Y1:30 Y2:40\n"
+            "<i>Hello</i>\n\n"
+            "2\n"
+            "00:00:04,000 --> 00:00:06,000\n"
+            "{\\an8}World\n"
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "wild.srt"
+            path.write_text(content, encoding="utf-8")
+
+            document = parse_srt_document(path)
+            rendered = render_document(document, document.segments, bilingual=False)
+
+        self.assertEqual([segment.id for segment in document.segments], ["1", "2"])
+        self.assertIsNone(document.segments[0].identifier)
+        self.assertEqual(document.segments[0].settings, "X1:10 X2:20 Y1:30 Y2:40")
+        self.assertEqual(document.segments[0].text, "<i>Hello</i>")
+        self.assertEqual(document.segments[1].identifier, "2")
+        self.assertEqual(document.segments[1].text, "{\\an8}World")
+        self.assertEqual(rendered, expected_rendered)

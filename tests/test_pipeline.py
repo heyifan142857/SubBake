@@ -10,6 +10,7 @@ from subbake.entities import PipelineOptions, Usage
 from subbake.models import build_backend
 from subbake.models.base_model import LLMBackend
 from subbake.pipeline import SubtitlePipeline
+from subbake.storage import build_runtime_paths
 
 
 class QuietDashboard:
@@ -180,6 +181,15 @@ class AlwaysMissingLineBackend(LLMBackend):
         start_index = text.index(start_marker) + len(start_marker)
         end_index = text.index(end_marker, start_index)
         return text[start_index:end_index].strip()
+
+
+class AlwaysAttributeErrorBackend(LLMBackend):
+    def generate_json(self, messages: list[dict[str, str]]) -> tuple[dict, Usage]:
+        _ = messages
+        raise AttributeError("'str' object has no attribute 'get'")
+
+    def check_credentials(self) -> tuple[bool, str]:
+        return True, "ok"
 
 
 class PipelineTestCase(unittest.TestCase):
@@ -423,6 +433,105 @@ class PipelineTestCase(unittest.TestCase):
             self.assertIn("Try rerunning with a smaller --batch-size", message)
             self.assertIn("--batch-size 25", message)
             self.assertIn("--batch-size 15", message)
+            self.assertIn("\nFailure sample saved to:\n", message)
+
+    def test_translation_failure_message_puts_failure_sample_on_new_line_for_generic_errors(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            input_path = temp_path / "generic.txt"
+            input_path.write_text("Alpha.\n", encoding="utf-8")
+
+            pipeline = SubtitlePipeline(
+                backend=AlwaysAttributeErrorBackend(),
+                options=PipelineOptions(
+                    input_path=input_path,
+                    batch_size=30,
+                    final_review=False,
+                    retries=0,
+                    work_dir=temp_path / "runtime",
+                ),
+                dashboard=QuietDashboard(),
+            )
+
+            with self.assertRaises(RuntimeError) as context:
+                pipeline.run()
+
+            message = str(context.exception)
+            self.assertIn("Last error: 'str' object has no attribute 'get'.", message)
+            self.assertIn("\nFailure sample saved to:\n", message)
+            self.assertNotIn("'get' Failure sample saved to", message)
+
+    def test_failure_sample_persists_attempt_details(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            input_path = temp_path / "failure.txt"
+            input_path.write_text("Alpha.\n", encoding="utf-8")
+            work_dir = temp_path / "runtime"
+
+            pipeline = SubtitlePipeline(
+                backend=AlwaysAttributeErrorBackend(),
+                options=PipelineOptions(
+                    input_path=input_path,
+                    batch_size=30,
+                    final_review=False,
+                    retries=1,
+                    work_dir=work_dir,
+                ),
+                dashboard=QuietDashboard(),
+            )
+
+            with self.assertRaises(RuntimeError):
+                pipeline.run()
+
+            runtime = build_runtime_paths(input_path=input_path, work_dir=work_dir, glossary_path=None)
+            failure_path = runtime.failures_dir / "translate_batch_0001.json"
+            failure = json.loads(failure_path.read_text(encoding="utf-8"))
+
+            self.assertEqual(failure["stage"], "translate")
+            self.assertEqual(failure["batch_index"], 1)
+            self.assertEqual(len(failure["attempts"]), 2)
+            self.assertEqual(failure["attempts"][0]["error"], "'str' object has no attribute 'get'")
+            self.assertTrue(failure["attempts"][0]["messages"])
+
+    def test_cache_hit_reuses_review_response_without_backend_call(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            input_path = temp_path / "cache.txt"
+            input_path.write_text("Hello Alice.\nMove.\n", encoding="utf-8")
+            work_dir = temp_path / "runtime"
+
+            first_result = SubtitlePipeline(
+                backend=ScriptedBackend(),
+                options=PipelineOptions(
+                    input_path=input_path,
+                    batch_size=10,
+                    final_review=False,
+                    resume=False,
+                    work_dir=work_dir,
+                ),
+                dashboard=QuietDashboard(),
+            ).run()
+
+            second_pipeline = SubtitlePipeline(
+                backend=FailingBackend(),
+                options=PipelineOptions(
+                    input_path=input_path,
+                    batch_size=10,
+                    final_review=False,
+                    resume=False,
+                    work_dir=work_dir,
+                ),
+                dashboard=QuietDashboard(),
+            )
+            second_pipeline._lookup_translation_memory = lambda batch_segments: {}
+            second_result = second_pipeline.run()
+
+            self.assertEqual(first_result.review_batches, 0)
+            self.assertGreaterEqual(second_result.cache_hits, 1)
+            self.assertEqual(
+                second_result.output_path.read_text(encoding="utf-8"),
+                "[SCRIPTED] Hello Alice.\n[SCRIPTED] Move.\n",
+            )
 
     def test_bilingual_render_reuses_existing_translation_state(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -460,6 +569,69 @@ class PipelineTestCase(unittest.TestCase):
             self.assertEqual(
                 second_result.output_path.read_text(encoding="utf-8"),
                 "hello\n[SCRIPTED] hello\nworld\n[SCRIPTED] world\n",
+            )
+
+    def test_bilingual_srt_output_stacks_source_and_translation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            input_path = temp_path / "dialogue.srt"
+            input_path.write_text(
+                "1\n00:00:01,000 --> 00:00:02,000\nHello there.\n\n"
+                "2\n00:00:03,000 --> 00:00:04,000\nMove.\n",
+                encoding="utf-8",
+            )
+
+            result = SubtitlePipeline(
+                backend=ScriptedBackend(),
+                options=PipelineOptions(
+                    input_path=input_path,
+                    batch_size=2,
+                    bilingual=True,
+                    final_review=False,
+                    work_dir=temp_path / "runtime",
+                ),
+                dashboard=QuietDashboard(),
+            ).run()
+
+            self.assertEqual(
+                result.output_path.read_text(encoding="utf-8"),
+                "1\n00:00:01,000 --> 00:00:02,000\nHello there.\n[SCRIPTED] Hello there.\n\n"
+                "2\n00:00:03,000 --> 00:00:04,000\nMove.\n[SCRIPTED] Move.\n",
+            )
+
+    def test_bilingual_vtt_output_preserves_passthrough_blocks_and_settings(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            input_path = temp_path / "dialogue.vtt"
+            input_path.write_text(
+                "WEBVTT\n\n"
+                "NOTE opening note\n\n"
+                "intro\n"
+                "00:00:01.000 --> 00:00:03.000 line:90%\n"
+                "Hello there.\n",
+                encoding="utf-8",
+            )
+
+            result = SubtitlePipeline(
+                backend=ScriptedBackend(),
+                options=PipelineOptions(
+                    input_path=input_path,
+                    batch_size=2,
+                    bilingual=True,
+                    final_review=False,
+                    work_dir=temp_path / "runtime",
+                ),
+                dashboard=QuietDashboard(),
+            ).run()
+
+            self.assertEqual(
+                result.output_path.read_text(encoding="utf-8"),
+                "WEBVTT\n\n"
+                "NOTE opening note\n\n"
+                "intro\n"
+                "00:00:01.000 --> 00:00:03.000 line:90%\n"
+                "Hello there.\n"
+                "[SCRIPTED] Hello there.\n",
             )
 
     def test_translation_memory_reuses_lines_across_files(self) -> None:

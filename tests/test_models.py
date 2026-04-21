@@ -39,6 +39,22 @@ class ModelParsingTestCase(unittest.TestCase):
         entries = parse_glossary_entries({"Hartman": "哈特曼"})
         self.assertEqual([(entry.source, entry.target) for entry in entries], [("Hartman", "哈特曼")])
 
+    def test_parse_glossary_entries_accepts_parenthetical_string_entries(self) -> None:
+        entries = parse_glossary_entries(
+            ["战斗脸 (war face): 军事训练中要求士兵展现的凶狠表情"]
+        )
+        self.assertEqual(
+            [(entry.source, entry.target) for entry in entries],
+            [("war face", "战斗脸")],
+        )
+
+    def test_parse_glossary_entries_accepts_hyphenated_string_entries(self) -> None:
+        entries = parse_glossary_entries(["列兵 - private", "formation - 队形"])
+        self.assertEqual(
+            [(entry.source, entry.target) for entry in entries],
+            [("private", "列兵"), ("formation", "队形")],
+        )
+
 
 class ProviderRetryTestCase(unittest.TestCase):
     def test_openai_backend_retries_retryable_http_errors(self) -> None:
@@ -88,3 +104,34 @@ class ProviderRetryTestCase(unittest.TestCase):
         self.assertEqual(context.exception.metadata.status_code, 503)
         self.assertEqual(context.exception.metadata.request_id, "req-503")
         self.assertTrue(context.exception.metadata.retryable)
+
+    def test_openai_backend_surfaces_transport_error_metadata(self) -> None:
+        backend = OpenAIBackend(model="demo", api_key="test-key", timeout_seconds=1.0)
+        error = urllib.error.URLError(socket.timeout("timed out"))
+
+        with patch("urllib.request.urlopen", side_effect=[error, error, error]), patch("time.sleep"):
+            with self.assertRaises(BackendRequestError) as context:
+                backend.generate_json([{"role": "user", "content": "hello"}])
+
+        self.assertIsNone(context.exception.metadata.status_code)
+        self.assertTrue(context.exception.metadata.retryable)
+        self.assertIn("timed out", str(context.exception.metadata.reason))
+
+    def test_openai_backend_raises_value_error_for_malformed_json_content(self) -> None:
+        backend = OpenAIBackend(model="demo", api_key="test-key", timeout_seconds=1.0)
+        response = FakeResponse(
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": "this is not valid json",
+                        }
+                    }
+                ],
+                "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+            }
+        )
+
+        with patch("urllib.request.urlopen", return_value=response):
+            with self.assertRaises(ValueError):
+                backend.generate_json([{"role": "user", "content": "hello"}])

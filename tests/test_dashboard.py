@@ -3,6 +3,8 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
+from rich.console import Console
+
 from subbake.ui.dashboard import Dashboard
 
 
@@ -73,6 +75,28 @@ class DashboardTestCase(unittest.TestCase):
 
         self.assertNotEqual(first_eta, "-")
         self.assertGreater(self._duration_to_seconds(second_eta), self._duration_to_seconds(first_eta) - 2)
+
+    def test_timeline_keeps_translate_and_review_progress_separate(self) -> None:
+        console = Console(record=True, width=120)
+        dashboard = Dashboard(console=console)
+        dashboard.live.refresh = lambda: None
+
+        dashboard.stage_states["LOAD_FILE"] = "done"
+        dashboard.stage_states["PARSE"] = "done"
+        dashboard.stage_states["TRANSLATE_BATCH"] = "done"
+        dashboard.stage_states["VALIDATE"] = "done"
+        dashboard.stage_states["FINAL_REVIEW"] = "running"
+        dashboard.batch_stage_current["TRANSLATE_BATCH"] = 36
+        dashboard.batch_stage_totals["TRANSLATE_BATCH"] = 87
+        dashboard.batch_stage_current["FINAL_REVIEW"] = 12
+        dashboard.batch_stage_totals["FINAL_REVIEW"] = 24
+
+        with patch("subbake.ui.dashboard.monotonic", return_value=10.0):
+            console.print(dashboard.render())
+
+        rendered = console.export_text()
+        self.assertIn("TRANSLATE_BATCH 36/87", rendered)
+        self.assertIn("FINAL_REVIEW 12/24", rendered)
 
     def _duration_to_seconds(self, value: str) -> int:
         if value.endswith("s") and "m" not in value and "h" not in value:

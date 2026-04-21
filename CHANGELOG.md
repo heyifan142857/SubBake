@@ -1,8 +1,8 @@
 # Changelog
 
-This file tracks the current unreleased working tree changes.
+This file tracks notable changes for each release.
 
-## Unreleased
+## [0.2.0] - 2026-04-21
 
 ### Added
 
@@ -12,7 +12,7 @@ This file tracks the current unreleased working tree changes.
 - Provider-side retry handling for OpenAI-compatible and Anthropic requests with exponential backoff, `Retry-After`, request ids, and structured failure metadata.
 - Dashboard ETA estimation that updates during translation and review batches.
 - Regression tests for incremental resume, render reuse, translation memory reuse, provider parsing behavior, prompt shaping, dashboard ETA, adaptive batching, and structural split retries.
-- This changelog to summarize the current uncommitted work.
+- Regression tests for cache hits, failure sample persistence, `clean`, malformed JSON responses, transport exceptions, and bilingual SRT/VTT rendering.
 
 ### Changed
 
@@ -22,6 +22,7 @@ This file tracks the current unreleased working tree changes.
 - Translation batching is now adaptive: it considers character load, estimated tokens, semantic boundaries, split-sentence risk, speaker changes, and formatting risk instead of only a fixed entry count.
 - Structural validation failures during translation now trigger automatic sub-batch retries before the batch is marked failed.
 - Translation failure messages now explain likely causes such as missing or merged lines, empty translations, rate limits, and transport failures, and suggest retry guidance such as lowering `--batch-size`.
+- SRT parsing is now more forgiving: cue indices are optional, cue timing settings are preserved, and wilder real-world timing lines are normalized on render.
 - CLI help and README wording now describe targeted review, intelligent batching, and incremental runtime artifacts more accurately.
 
 ### Fixed

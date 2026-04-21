@@ -531,18 +531,20 @@ class SubtitlePipeline:
             headline += "s"
         if split_fallback:
             headline += " and automatic split retry"
-        headline += "."
 
         diagnosis, detail, suggestion = self._diagnose_translation_failure(attempt_logs)
-        parts = [headline]
+        details: list[str] = []
         if diagnosis:
-            parts.append(diagnosis)
+            details.append(diagnosis)
         if detail:
-            parts.append(f"Last error: {detail}")
+            details.append(f"Last error: {detail}")
         if suggestion:
-            parts.append(suggestion)
-        parts.append(f"Failure sample saved to {failure_path}.")
-        return " ".join(parts)
+            details.append(suggestion)
+        return self._format_failure_message(
+            headline=headline,
+            details=details,
+            failure_path=failure_path,
+        )
 
     def _diagnose_translation_failure(self, attempt_logs: list[dict]) -> tuple[str | None, str | None, str | None]:
         error_messages = self._collect_attempt_errors(attempt_logs)
@@ -658,6 +660,31 @@ class SubtitlePipeline:
             return normalized
         return max(5, (normalized // 5) * 5)
 
+    def _format_failure_message(
+        self,
+        *,
+        headline: str,
+        details: list[str],
+        failure_path: Path,
+    ) -> str:
+        lines = [self._ensure_sentence(headline)]
+        lines.extend(
+            self._ensure_sentence(detail)
+            for detail in details
+            if detail.strip()
+        )
+        lines.append("Failure sample saved to:")
+        lines.append(str(failure_path))
+        return "\n".join(lines)
+
+    def _ensure_sentence(self, text: str) -> str:
+        cleaned = text.strip()
+        if not cleaned:
+            return cleaned
+        if cleaned.endswith((".", "!", "?", "。", "！", "？")):
+            return cleaned
+        return f"{cleaned}."
+
     def _review_batch_with_retry(
         self,
         source_segments: list[SubtitleSegment],
@@ -741,7 +768,11 @@ class SubtitlePipeline:
                         attempts=attempt_logs,
                     )
                     raise RuntimeError(
-                        f"Final review batch failed after {attempts} attempts. Failure sample saved to {failure_path}."
+                        self._format_failure_message(
+                            headline=f"Final review batch {batch_index} failed after {attempts} attempts",
+                            details=[f"Last error: {exc}"],
+                            failure_path=failure_path,
+                        )
                     ) from exc
         raise RuntimeError("Review batch retry loop ended unexpectedly.")
 

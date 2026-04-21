@@ -157,11 +157,7 @@ class Dashboard:
         timeline_rows: list[Text] = []
         for stage in self.stage_order[:-1]:
             state = self.stage_states[stage]
-            label = stage
-            if stage == "TRANSLATE_BATCH" and self.batch.total:
-                label = f"{stage} {self.batch.index}/{self.batch.total}"
-            if stage == "FINAL_REVIEW" and self.batch.stage_label.startswith("FINAL_REVIEW"):
-                label = self.batch.stage_label
+            label = self._timeline_stage_label(stage)
             style, icon = self._timeline_indicator(state)
             row = Text()
             row.append("[", style=style)
@@ -199,6 +195,14 @@ class Dashboard:
             batch_table,
         )
         return Panel(group, border_style="cyan", title="Subtitle Translation")
+
+    def _timeline_stage_label(self, stage: str) -> str:
+        if stage in self.BATCH_STAGES:
+            total = self.batch_stage_totals.get(stage, 0)
+            if total:
+                current = self.batch_stage_current.get(stage, 0)
+                return f"{stage} {current}/{total}"
+        return stage
 
     def _progress_bar(self, width: int = 20) -> str:
         ratio = min(1.0, self.completed_steps / self.total_steps)
