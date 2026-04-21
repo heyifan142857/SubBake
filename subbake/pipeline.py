@@ -77,6 +77,9 @@ class SubtitlePipeline:
         self.memory = ContextMemory()
         self.dashboard = dashboard or Dashboard()
         self.cache_hits = 0
+        self.translation_memory_hits = 0
+        self.resumed_translation_batches = 0
+        self.resumed_review_batches = 0
         self.runtime_paths = build_runtime_paths(
             input_path=self.options.input_path,
             work_dir=self.options.work_dir,
@@ -132,6 +135,10 @@ class SubtitlePipeline:
                     usage=self.dashboard.usage,
                     dry_run=True,
                     planned_batches=self._build_batch_plan(translation_batches),
+                    cache_hits=0,
+                    resumed_translation_batches=0,
+                    resumed_review_batches=0,
+                    translation_memory_hits=0,
                     state_path=self.runtime_paths.state_path,
                     glossary_path=self.runtime_paths.glossary_path,
                 )
@@ -198,6 +205,9 @@ class SubtitlePipeline:
             review_batches=len(review_plan),
             usage=self.dashboard.usage,
             cache_hits=self.cache_hits,
+            resumed_translation_batches=self.resumed_translation_batches,
+            resumed_review_batches=self.resumed_review_batches,
+            translation_memory_hits=self.translation_memory_hits,
             state_path=self.runtime_paths.state_path,
             glossary_path=self.runtime_paths.glossary_path,
         )
@@ -964,6 +974,7 @@ class SubtitlePipeline:
             cached_translation = self.translation_memory.get(key)
             if cached_translation is None:
                 continue
+            self.translation_memory_hits += 1
             matches[segment.id] = TranslationLine(
                 id=segment.id,
                 translation=cached_translation,
@@ -1403,6 +1414,8 @@ class SubtitlePipeline:
             self._load_persistent_glossary()
             return ResumeSnapshot()
 
+        self.resumed_translation_batches = snapshot.translation_batches_completed
+        self.resumed_review_batches = snapshot.review_batches_completed
         self.translation_memory = self.translation_memory_store.load()
         try:
             if snapshot.translation_batches_completed and not snapshot.translated_segments:
@@ -1442,6 +1455,13 @@ class SubtitlePipeline:
                 validation_completed=resume.validation_completed or resume.review_batches_completed > 0,
                 review_batches=review_batches,
             )
+        )
+        self.dashboard.restore_stage_progress(
+            translation_batches_completed=resume.translation_batches_completed,
+            total_translation_batches=total_translation_batches,
+            review_batches_completed=min(resume.review_batches_completed, review_batches),
+            review_batches=review_batches,
+            validation_completed=resume.validation_completed or resume.review_batches_completed > 0,
         )
 
     def _has_resume_progress(self, resume: ResumeSnapshot) -> bool:

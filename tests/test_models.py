@@ -9,7 +9,9 @@ from unittest.mock import patch
 from subbake.entities import Usage
 from subbake.models.base_model import (
     BackendRequestError,
+    GeminiBackend,
     OpenAIBackend,
+    build_backend,
     parse_glossary_entries,
     parse_translation_lines,
 )
@@ -135,3 +137,26 @@ class ProviderRetryTestCase(unittest.TestCase):
         with patch("urllib.request.urlopen", return_value=response):
             with self.assertRaises(ValueError):
                 backend.generate_json([{"role": "user", "content": "hello"}])
+
+    def test_build_backend_supports_gemini_provider(self) -> None:
+        backend = build_backend("gemini", "gemini-2.5-flash", api_key="test-key")
+
+        self.assertIsInstance(backend, GeminiBackend)
+        self.assertEqual(backend.base_url, "https://generativelanguage.googleapis.com/v1beta/openai")
+        self.assertEqual(backend.api_key, "test-key")
+
+    def test_gemini_backend_uses_gemini_api_key_env_var(self) -> None:
+        with patch.dict("os.environ", {"GEMINI_API_KEY": "gem-test-key"}, clear=False):
+            backend = GeminiBackend(model="gemini-2.5-flash")
+
+        self.assertEqual(backend.api_key, "gem-test-key")
+
+    def test_gemini_backend_credential_check_uses_gemini_label(self) -> None:
+        backend = GeminiBackend(model="gemini-2.5-flash", api_key="test-key", timeout_seconds=1.0)
+        response = FakeResponse({"data": [{"id": "gemini-2.5-flash"}]})
+
+        with patch("urllib.request.urlopen", return_value=response):
+            valid, message = backend.check_credentials()
+
+        self.assertTrue(valid)
+        self.assertIn("Gemini", message)

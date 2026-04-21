@@ -16,7 +16,7 @@ from subbake.config import (
     load_app_config,
     resolve_command_config,
 )
-from subbake.entities import DEFAULT_BATCH_SIZE, PipelineOptions
+from subbake.entities import DEFAULT_BATCH_SIZE, PipelineOptions, PipelineResult
 from subbake.languages import normalize_language_name
 from subbake.models import build_backend
 from subbake.pipeline import SubtitlePipeline
@@ -36,7 +36,7 @@ Common commands:
 Common options for `sbake translate`:
   --output         Set the output file path
   --output-format  Force the output format: srt / vtt / txt
-  --provider       Choose the model provider, such as mock / openai / anthropic
+  --provider       Choose the model provider, such as mock / openai / anthropic / gemini
   --model          Set the model name
   --base-url       Set the OpenAI-compatible API base URL
   --api-key        Pass the API key directly
@@ -48,7 +48,7 @@ Common options for `sbake translate`:
   --profile        Choose a named config profile
   --dry-run        Parse and plan batches without calling the model
   --resume         Resume from run_state.json when available
-  --cache          Reuse cached responses for identical prompts
+  --cache          Reuse cached responses and translation-memory matches
   --work-dir       Directory for cache / run state / failures
   --glossary-path  Path to the persistent glossary JSON file
 
@@ -132,6 +132,21 @@ def _configured_value(
     return config_values.get(parameter_name, current_value)
 
 
+def _format_reuse_summary(result: PipelineResult) -> str | None:
+    parts: list[str] = []
+    if result.resumed_translation_batches:
+        parts.append(f"{result.resumed_translation_batches} translated batch(es) from resume")
+    if result.resumed_review_batches:
+        parts.append(f"{result.resumed_review_batches} review batch(es) from resume")
+    if result.translation_memory_hits:
+        parts.append(f"{result.translation_memory_hits} line(s) from translation memory")
+    if result.cache_hits:
+        parts.append(f"{result.cache_hits} cached request(s)")
+    if not parts:
+        return None
+    return ", ".join(parts)
+
+
 @app.command()
 def translate(
     ctx: typer.Context,
@@ -142,7 +157,7 @@ def translate(
         "--output-format",
         help="Output format override: srt, vtt, or txt. When omitted, sbake infers the format from --output if it uses a supported suffix, otherwise it keeps the input format.",
     ),
-    provider: str = typer.Option("mock", "--provider", help="LLM provider: mock, openai, anthropic."),
+    provider: str = typer.Option("mock", "--provider", help="LLM provider: mock, openai, anthropic, gemini."),
     model: str = typer.Option("mock-zh", "--model", help="Model name for the selected provider."),
     api_key: str | None = typer.Option(None, "--api-key", help="API key override for the provider."),
     base_url: str | None = typer.Option(None, "--base-url", help="OpenAI-compatible API base URL."),
@@ -190,7 +205,11 @@ def translate(
     timeout: float = typer.Option(120.0, "--timeout", min=1.0, help="Per-request timeout in seconds."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Only parse and show batch planning without calling the model."),
     resume: bool = typer.Option(True, "--resume/--no-resume", help="Resume from saved run state when available."),
-    cache: bool = typer.Option(True, "--cache/--no-cache", help="Reuse cached responses for identical prompts."),
+    cache: bool = typer.Option(
+        True,
+        "--cache/--no-cache",
+        help="Reuse cached responses and translation-memory matches.",
+    ),
     work_dir: Path | None = typer.Option(None, "--work-dir", file_okay=False, help="Directory for cache, run state, failures, and default glossary."),
     glossary_path: Path | None = typer.Option(None, "--glossary-path", dir_okay=False, help="Persistent glossary JSON path."),
 ) -> None:
@@ -299,14 +318,15 @@ def translate(
         "[bold green]Batches:[/bold green] "
         f"{result.batches_translated} translated, {result.review_batches} reviewed"
     )
+    reuse_summary = _format_reuse_summary(result)
+    if reuse_summary is not None:
+        console.print(f"[bold green]Reused:[/bold green] {reuse_summary}")
     config_description = format_config_selection(config_selection)
     if config_description is not None:
         console.print(f"[bold green]Config:[/bold green] {config_description}")
     if fast:
         console.print("[bold green]Mode:[/bold green] fast")
     console.print(f"[bold green]Target language:[/bold green] {normalized_target_language}")
-    if result.cache_hits:
-        console.print(f"[bold green]Cache hits:[/bold green] {result.cache_hits}")
     if result.glossary_path is not None:
         console.print(f"[bold green]Glossary:[/bold green] {result.glossary_path}")
     if result.state_path is not None:
@@ -316,7 +336,7 @@ def translate(
 @app.command("check-key")
 def check_key(
     ctx: typer.Context,
-    provider: str = typer.Option("openai", "--provider", help="LLM provider: mock, openai, anthropic."),
+    provider: str = typer.Option("openai", "--provider", help="LLM provider: mock, openai, anthropic, gemini."),
     model: str = typer.Option(
         "check-only",
         "--model",

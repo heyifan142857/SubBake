@@ -124,6 +124,29 @@ class DashboardTestCase(unittest.TestCase):
         self.assertEqual(self.dashboard.completed_steps, 5)
         self.assertIn(" 83.3%", self.dashboard._progress_bar())
 
+    def test_resume_restore_marks_fully_reused_stages_done(self) -> None:
+        console = Console(record=True, width=120)
+        dashboard = Dashboard(console=console)
+        dashboard.live.refresh = lambda: None
+
+        dashboard.stage_states["LOAD_FILE"] = "done"
+        dashboard.stage_states["PARSE"] = "done"
+        dashboard.restore_stage_progress(
+            translation_batches_completed=36,
+            total_translation_batches=36,
+            review_batches_completed=12,
+            review_batches=12,
+            validation_completed=True,
+        )
+
+        with patch("subbake.ui.dashboard.monotonic", return_value=10.0):
+            console.print(dashboard.render())
+
+        rendered = console.export_text()
+        self.assertIn("[ ✓ ] TRANSLATE_BATCH 36/36", rendered)
+        self.assertIn("[ ✓ ] VALIDATE", rendered)
+        self.assertIn("[ ✓ ] FINAL_REVIEW 12/12", rendered)
+
     def _duration_to_seconds(self, value: str) -> int:
         if value.endswith("s") and "m" not in value and "h" not in value:
             return int(value[:-1])

@@ -194,5 +194,25 @@ class CLITestCase(unittest.TestCase):
             self.assertTrue(Path("converted.txt").exists())
             self.assertEqual(Path("converted.txt").read_text(encoding="utf-8"), "[MOCK-ZH] hello\n")
 
+    def test_translate_reports_when_previous_results_are_reused(self) -> None:
+        with self.runner.isolated_filesystem():
+            Path("clip.txt").write_text("hello\nworld\n", encoding="utf-8")
+
+            first_result = self.runner.invoke(
+                app,
+                ["translate", "clip.txt", "--provider", "mock", "--model", "mock-zh", "--no-final-review"],
+            )
+            self.assertEqual(first_result.exit_code, 0)
+
+            second_result = self.runner.invoke(
+                app,
+                ["translate", "clip.txt", "--provider", "mock", "--model", "mock-zh", "--no-final-review"],
+            )
+
+            self.assertEqual(second_result.exit_code, 0)
+            output = self._strip_ansi(second_result.stdout)
+            self.assertIn("Reused:", output)
+            self.assertIn("1 translated batch(es) from resume", output)
+
     def _strip_ansi(self, value: str) -> str:
         return re.sub(r"\x1b\[[0-9;]*m", "", value)

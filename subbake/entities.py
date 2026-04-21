@@ -109,5 +109,8 @@ class PipelineResult:
     dry_run: bool = False
     planned_batches: list[BatchPlanEntry] = field(default_factory=list)
     cache_hits: int = 0
+    resumed_translation_batches: int = 0
+    resumed_review_batches: int = 0
+    translation_memory_hits: int = 0
     state_path: Path | None = None
     glossary_path: Path | None = None

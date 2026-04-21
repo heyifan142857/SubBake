@@ -137,6 +137,38 @@ class Dashboard:
         self.completed_steps = max(0, completed_steps)
         self.refresh()
 
+    def restore_stage_progress(
+        self,
+        *,
+        translation_batches_completed: int,
+        total_translation_batches: int,
+        review_batches_completed: int,
+        review_batches: int,
+        validation_completed: bool,
+    ) -> None:
+        if total_translation_batches > 0:
+            self.batch_stage_totals["TRANSLATE_BATCH"] = total_translation_batches
+            self.batch_stage_current["TRANSLATE_BATCH"] = min(
+                translation_batches_completed,
+                total_translation_batches,
+            )
+            if translation_batches_completed >= total_translation_batches:
+                self.stage_states["TRANSLATE_BATCH"] = "done"
+
+        if validation_completed and translation_batches_completed >= total_translation_batches:
+            self.stage_states["VALIDATE"] = "done"
+
+        if review_batches > 0:
+            self.batch_stage_totals["FINAL_REVIEW"] = review_batches
+            self.batch_stage_current["FINAL_REVIEW"] = min(
+                review_batches_completed,
+                review_batches,
+            )
+            if review_batches_completed >= review_batches:
+                self.stage_states["FINAL_REVIEW"] = "done"
+
+        self.refresh()
+
     def set_batch(self, index: int, total: int, latency_seconds: float, stage_label: str) -> None:
         self.batch = BatchSnapshot(
             index=index,

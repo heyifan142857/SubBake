@@ -10,6 +10,7 @@ This file tracks notable changes for each release.
 - Target language aliases such as `en`, `ja`, `ko`, `fr`, `es`, and `de`, plus matching source-language alias support.
 - `subbake.toml` configuration support with auto-discovery, `--config`, `--profile`, `[defaults]`, and named profiles for model/provider presets.
 - An `--output-format` option that can convert subtitle output between `srt`, `vtt`, and `txt`, plus output-path suffix inference such as `.srt -> .txt`.
+- A `gemini` provider that uses Google's official Gemini OpenAI-compatible endpoint with `GEMINI_API_KEY`.
 
 ### Changed
 
@@ -21,6 +22,8 @@ This file tracks notable changes for each release.
 - Config discovery now follows `command line > project config > home/global config > built-in defaults`, with global config support for Linux, macOS, and Windows locations.
 - README examples now use a `chatgpt` profile instead of `deepseek`, and the output section documents explicit output paths and cross-format rendering.
 - The config-file docs now point to a repository example file and more clearly recommend home/global config for personal default usage, with project config as an override layer.
+- README is now trimmed down into a shorter landing page, with more detailed usage notes reorganized into wiki-style local pages.
+- README now uses a shorter documentation section that points directly to the project wiki instead of listing multiple inline doc links.
 
 ## [0.2.0] - 2026-04-21
 

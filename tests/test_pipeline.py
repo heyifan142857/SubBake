@@ -51,6 +51,23 @@ class QuietDashboard:
     def restore_progress(self, completed_steps: int) -> None:
         self.completed_steps = completed_steps
 
+    def restore_stage_progress(
+        self,
+        *,
+        translation_batches_completed: int,
+        total_translation_batches: int,
+        review_batches_completed: int,
+        review_batches: int,
+        validation_completed: bool,
+    ) -> None:
+        _ = (
+            translation_batches_completed,
+            total_translation_batches,
+            review_batches_completed,
+            review_batches,
+            validation_completed,
+        )
+
     def set_batch(self, index: int, total: int, latency_seconds: float, stage_label: str) -> None:
         _ = (index, total, latency_seconds, stage_label)
 
@@ -347,6 +364,8 @@ class PipelineTestCase(unittest.TestCase):
             self.assertEqual(second_backend.call_count, 2)
             self.assertEqual(result.batches_translated, 3)
             self.assertEqual(result.review_batches, 0)
+            self.assertEqual(result.resumed_translation_batches, 1)
+            self.assertEqual(result.resumed_review_batches, 0)
             self.assertEqual(
                 result.output_path.read_text(encoding="utf-8"),
                 "[SCRIPTED] one\n[SCRIPTED] two\n[SCRIPTED] three\n[SCRIPTED] four\n[SCRIPTED] five\n",
@@ -559,6 +578,7 @@ class PipelineTestCase(unittest.TestCase):
 
             self.assertEqual(first_result.review_batches, 0)
             self.assertGreaterEqual(second_result.cache_hits, 1)
+            self.assertEqual(second_result.translation_memory_hits, 0)
             self.assertEqual(
                 second_result.output_path.read_text(encoding="utf-8"),
                 "[SCRIPTED] Hello Alice.\n[SCRIPTED] Move.\n",
@@ -597,6 +617,7 @@ class PipelineTestCase(unittest.TestCase):
 
             self.assertEqual(first_result.batches_translated, 1)
             self.assertEqual(second_result.batches_translated, 1)
+            self.assertEqual(second_result.resumed_translation_batches, 1)
             self.assertEqual(
                 second_result.output_path.read_text(encoding="utf-8"),
                 "hello\n[SCRIPTED] hello\nworld\n[SCRIPTED] world\n",
@@ -699,6 +720,7 @@ class PipelineTestCase(unittest.TestCase):
             ).run()
 
             self.assertEqual(first_backend.call_count, 1)
+            self.assertEqual(second_result.translation_memory_hits, 2)
             self.assertEqual(
                 second_result.output_path.read_text(encoding="utf-8"),
                 "[SCRIPTED] Same line\n[SCRIPTED] Another line\n",

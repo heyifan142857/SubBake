@@ -114,14 +114,24 @@ class OpenAIBackend(LLMBackend):
         api_key: str | None = None,
         base_url: str | None = None,
         timeout_seconds: float = 120.0,
+        provider_label: str = "OpenAI-compatible",
+        api_key_env_var: str = "OPENAI_API_KEY",
+        base_url_env_var: str = "OPENAI_BASE_URL",
+        default_base_url: str = "https://api.openai.com/v1",
     ) -> None:
         self.model = model
-        self.api_key = api_key or os.getenv("OPENAI_API_KEY")
-        self.base_url = (base_url or os.getenv("OPENAI_BASE_URL") or "https://api.openai.com/v1").rstrip("/")
+        self.provider_label = provider_label
+        self.api_key_env_var = api_key_env_var
+        self.base_url_env_var = base_url_env_var
+        self.api_key = api_key or os.getenv(self.api_key_env_var)
+        self.base_url = (base_url or os.getenv(self.base_url_env_var) or default_base_url).rstrip("/")
         self.timeout_seconds = timeout_seconds
         self.max_retry_attempts = 3
         if not self.api_key:
-            raise ValueError("Missing API key for OpenAI provider. Set OPENAI_API_KEY or use --api-key.")
+            raise ValueError(
+                f"Missing API key for {self.provider_label} provider. "
+                f"Set {self.api_key_env_var} or use --api-key."
+            )
 
     def generate_json(self, messages: list[dict[str, str]]) -> tuple[dict, Usage]:
         payload = {
@@ -152,14 +162,14 @@ class OpenAIBackend(LLMBackend):
                 data = json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", errors="replace")
-            return False, _format_http_error("OpenAI-compatible", exc.code, body)
+            return False, _format_http_error(self.provider_label, exc.code, body)
         except urllib.error.URLError as exc:
-            return False, f"OpenAI-compatible credential check failed: {exc.reason}"
+            return False, f"{self.provider_label} credential check failed: {exc.reason}"
 
         model_count = len(data.get("data", [])) if isinstance(data, dict) else 0
         if model_count:
-            return True, f"Credentials look valid. {model_count} model(s) visible from {self.base_url}."
-        return True, f"Credentials look valid. Successfully reached {self.base_url}."
+            return True, f"Credentials look valid. {model_count} model(s) visible from {self.provider_label}."
+        return True, f"Credentials look valid. Successfully reached {self.provider_label}."
 
     def _request_with_retries(self, payload: dict) -> tuple[dict, Usage]:
         last_error: BackendRequestError | None = None
@@ -192,9 +202,9 @@ class OpenAIBackend(LLMBackend):
                 headers = response.headers
                 data = json.loads(response.read().decode("utf-8"))
         except urllib.error.HTTPError as exc:
-            raise self._build_http_error("OpenAI-compatible", exc, url) from exc
+            raise self._build_http_error(self.provider_label, exc, url) from exc
         except (urllib.error.URLError, socket.timeout, TimeoutError) as exc:
-            raise self._build_transport_error("OpenAI-compatible", exc, url)
+            raise self._build_transport_error(self.provider_label, exc, url)
 
         content = data["choices"][0]["message"]["content"]
         parsed = _extract_json_object(content)
@@ -243,6 +253,26 @@ class OpenAIBackend(LLMBackend):
         return BackendRequestError(
             _format_backend_error_message(metadata),
             metadata=metadata,
+        )
+
+
+class GeminiBackend(OpenAIBackend):
+    def __init__(
+        self,
+        model: str,
+        api_key: str | None = None,
+        base_url: str | None = None,
+        timeout_seconds: float = 120.0,
+    ) -> None:
+        super().__init__(
+            model=model,
+            api_key=api_key,
+            base_url=base_url,
+            timeout_seconds=timeout_seconds,
+            provider_label="Gemini",
+            api_key_env_var="GEMINI_API_KEY",
+            base_url_env_var="GEMINI_BASE_URL",
+            default_base_url="https://generativelanguage.googleapis.com/v1beta/openai",
         )
 
 
@@ -405,6 +435,13 @@ def build_backend(
             base_url=base_url,
             timeout_seconds=timeout_seconds,
         )
+    if normalized == "gemini":
+        return GeminiBackend(
+            model=model,
+            api_key=api_key,
+            base_url=base_url,
+            timeout_seconds=timeout_seconds,
+        )
     if normalized == "anthropic":
         return AnthropicBackend(
             model=model,
@@ -545,7 +582,7 @@ def _format_http_error(provider_label: str, status_code: int, body: str) -> str:
 def _extract_request_id(headers: Message | HTTPMessage | None) -> str | None:
     if headers is None:
         return None
-    for header_name in ("x-request-id", "request-id", "anthropic-request-id"):
+    for header_name in ("x-request-id", "request-id", "anthropic-request-id", "x-goog-request-id"):
         value = headers.get(header_name)
         if value:
             return str(value)
