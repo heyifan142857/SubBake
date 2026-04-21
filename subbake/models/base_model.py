@@ -2,12 +2,48 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import re
+import socket
+import time
 import urllib.error
 import urllib.request
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
+from email.message import Message
+from http.client import HTTPMessage
+from typing import Any
 
 from subbake.entities import GlossaryEntry, TranslationLine, Usage
+
+
+@dataclass(slots=True)
+class BackendErrorMetadata:
+    provider: str
+    retryable: bool
+    status_code: int | None = None
+    request_id: str | None = None
+    response_body: str | None = None
+    reason: str | None = None
+    retry_after_seconds: float | None = None
+    url: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "provider": self.provider,
+            "retryable": self.retryable,
+            "status_code": self.status_code,
+            "request_id": self.request_id,
+            "reason": self.reason,
+            "retry_after_seconds": self.retry_after_seconds,
+            "url": self.url,
+        }
+
+
+class BackendRequestError(RuntimeError):
+    def __init__(self, message: str, *, metadata: BackendErrorMetadata) -> None:
+        super().__init__(message)
+        self.metadata = metadata
 
 
 class LLMBackend(ABC):
@@ -79,6 +115,7 @@ class OpenAIBackend(LLMBackend):
         self.api_key = api_key or os.getenv("OPENAI_API_KEY")
         self.base_url = (base_url or os.getenv("OPENAI_BASE_URL") or "https://api.openai.com/v1").rstrip("/")
         self.timeout_seconds = timeout_seconds
+        self.max_retry_attempts = 3
         if not self.api_key:
             raise ValueError("Missing API key for OpenAI provider. Set OPENAI_API_KEY or use --api-key.")
 
@@ -90,13 +127,13 @@ class OpenAIBackend(LLMBackend):
         }
 
         try:
-            return self._request(payload)
-        except urllib.error.HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="replace")
-            if exc.code == 400 and "response_format" in body:
+            return self._request_with_retries(payload)
+        except BackendRequestError as exc:
+            body = (exc.metadata.response_body or "").lower()
+            if exc.metadata.status_code == 400 and "response_format" in body:
                 fallback = {"model": self.model, "messages": messages}
-                return self._request(fallback)
-            raise RuntimeError(f"OpenAI request failed: {body}") from exc
+                return self._request_with_retries(fallback)
+            raise
 
     def check_credentials(self) -> tuple[bool, str]:
         request = urllib.request.Request(
@@ -120,9 +157,25 @@ class OpenAIBackend(LLMBackend):
             return True, f"Credentials look valid. {model_count} model(s) visible from {self.base_url}."
         return True, f"Credentials look valid. Successfully reached {self.base_url}."
 
-    def _request(self, payload: dict) -> tuple[dict, Usage]:
+    def _request_with_retries(self, payload: dict) -> tuple[dict, Usage]:
+        last_error: BackendRequestError | None = None
+        for attempt in range(1, self.max_retry_attempts + 1):
+            try:
+                return self._request_once(payload)
+            except BackendRequestError as exc:
+                last_error = exc
+                if attempt >= self.max_retry_attempts or not exc.metadata.retryable:
+                    raise
+                delay_seconds = self._retry_delay_seconds(exc.metadata, attempt)
+                time.sleep(delay_seconds)
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("OpenAI request retry loop ended unexpectedly.")
+
+    def _request_once(self, payload: dict) -> tuple[dict, Usage]:
+        url = f"{self.base_url}/chat/completions"
         request = urllib.request.Request(
-            url=f"{self.base_url}/chat/completions",
+            url=url,
             data=json.dumps(payload).encode("utf-8"),
             headers={
                 "Authorization": f"Bearer {self.api_key}",
@@ -130,8 +183,15 @@ class OpenAIBackend(LLMBackend):
             },
             method="POST",
         )
-        with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
-            data = json.loads(response.read().decode("utf-8"))
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
+                headers = response.headers
+                data = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            raise self._build_http_error("OpenAI-compatible", exc, url) from exc
+        except (urllib.error.URLError, socket.timeout, TimeoutError) as exc:
+            raise self._build_transport_error("OpenAI-compatible", exc, url)
+
         content = data["choices"][0]["message"]["content"]
         parsed = _extract_json_object(content)
         usage_data = data.get("usage", {})
@@ -144,6 +204,43 @@ class OpenAIBackend(LLMBackend):
             usage.total_tokens = usage.input_tokens + usage.output_tokens
         return parsed, usage
 
+    def _retry_delay_seconds(self, metadata: BackendErrorMetadata, attempt: int) -> float:
+        if metadata.retry_after_seconds is not None:
+            return metadata.retry_after_seconds
+        base_delay = min(8.0, 0.75 * (2 ** (attempt - 1)))
+        jitter = random.uniform(0.0, 0.25)
+        return base_delay + jitter
+
+    def _build_http_error(self, provider_label: str, exc: urllib.error.HTTPError, url: str) -> BackendRequestError:
+        body = exc.read().decode("utf-8", errors="replace")
+        status_code = getattr(exc, "code", None)
+        request_id = _extract_request_id(exc.headers)
+        metadata = BackendErrorMetadata(
+            provider=provider_label,
+            retryable=_is_retryable_http_status(status_code),
+            status_code=status_code,
+            request_id=request_id,
+            response_body=body,
+            retry_after_seconds=_extract_retry_after_seconds(exc.headers),
+            url=url,
+        )
+        return BackendRequestError(
+            _format_backend_error_message(metadata),
+            metadata=metadata,
+        )
+
+    def _build_transport_error(self, provider_label: str, exc: BaseException, url: str) -> BackendRequestError:
+        metadata = BackendErrorMetadata(
+            provider=provider_label,
+            retryable=True,
+            reason=_stringify_transport_reason(exc),
+            url=url,
+        )
+        return BackendRequestError(
+            _format_backend_error_message(metadata),
+            metadata=metadata,
+        )
+
 
 class AnthropicBackend(LLMBackend):
     def __init__(
@@ -155,6 +252,7 @@ class AnthropicBackend(LLMBackend):
         self.model = model
         self.api_key = api_key or os.getenv("ANTHROPIC_API_KEY")
         self.timeout_seconds = timeout_seconds
+        self.max_retry_attempts = 3
         if not self.api_key:
             raise ValueError("Missing API key for Anthropic provider. Set ANTHROPIC_API_KEY or use --api-key.")
 
@@ -171,22 +269,7 @@ class AnthropicBackend(LLMBackend):
             "system": "\n\n".join(system_parts),
             "messages": body_messages,
         }
-        request = urllib.request.Request(
-            url="https://api.anthropic.com/v1/messages",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "x-api-key": self.api_key,
-                "anthropic-version": "2023-06-01",
-                "Content-Type": "application/json",
-            },
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
-                data = json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:
-            body = exc.read().decode("utf-8", errors="replace")
-            raise RuntimeError(f"Anthropic request failed: {body}") from exc
+        data, _ = self._request_with_retries(payload)
 
         chunks = [
             item.get("text", "")
@@ -204,6 +287,78 @@ class AnthropicBackend(LLMBackend):
         if usage.total_tokens == 0:
             usage.total_tokens = usage.input_tokens + usage.output_tokens
         return parsed, usage
+
+    def _request_with_retries(self, payload: dict) -> tuple[dict, Message | HTTPMessage | None]:
+        last_error: BackendRequestError | None = None
+        for attempt in range(1, self.max_retry_attempts + 1):
+            try:
+                return self._request_once(payload)
+            except BackendRequestError as exc:
+                last_error = exc
+                if attempt >= self.max_retry_attempts or not exc.metadata.retryable:
+                    raise
+                delay_seconds = self._retry_delay_seconds(exc.metadata, attempt)
+                time.sleep(delay_seconds)
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("Anthropic request retry loop ended unexpectedly.")
+
+    def _request_once(self, payload: dict) -> tuple[dict, Message | HTTPMessage | None]:
+        url = "https://api.anthropic.com/v1/messages"
+        request = urllib.request.Request(
+            url=url,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "x-api-key": self.api_key,
+                "anthropic-version": "2023-06-01",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
+                return json.loads(response.read().decode("utf-8")), response.headers
+        except urllib.error.HTTPError as exc:
+            raise self._build_http_error("Anthropic", exc, url) from exc
+        except (urllib.error.URLError, socket.timeout, TimeoutError) as exc:
+            raise self._build_transport_error("Anthropic", exc, url)
+
+    def _retry_delay_seconds(self, metadata: BackendErrorMetadata, attempt: int) -> float:
+        if metadata.retry_after_seconds is not None:
+            return metadata.retry_after_seconds
+        base_delay = min(8.0, 0.75 * (2 ** (attempt - 1)))
+        jitter = random.uniform(0.0, 0.25)
+        return base_delay + jitter
+
+    def _build_http_error(self, provider_label: str, exc: urllib.error.HTTPError, url: str) -> BackendRequestError:
+        body = exc.read().decode("utf-8", errors="replace")
+        status_code = getattr(exc, "code", None)
+        request_id = _extract_request_id(exc.headers)
+        metadata = BackendErrorMetadata(
+            provider=provider_label,
+            retryable=_is_retryable_http_status(status_code),
+            status_code=status_code,
+            request_id=request_id,
+            response_body=body,
+            retry_after_seconds=_extract_retry_after_seconds(exc.headers),
+            url=url,
+        )
+        return BackendRequestError(
+            _format_backend_error_message(metadata),
+            metadata=metadata,
+        )
+
+    def _build_transport_error(self, provider_label: str, exc: BaseException, url: str) -> BackendRequestError:
+        metadata = BackendErrorMetadata(
+            provider=provider_label,
+            retryable=True,
+            reason=_stringify_transport_reason(exc),
+            url=url,
+        )
+        return BackendRequestError(
+            _format_backend_error_message(metadata),
+            metadata=metadata,
+        )
 
     def check_credentials(self) -> tuple[bool, str]:
         request = urllib.request.Request(
@@ -256,15 +411,26 @@ def build_backend(
 
 
 def parse_translation_lines(items: list[dict]) -> list[TranslationLine]:
-    return [
-        TranslationLine(id=str(item["id"]), translation=str(item["translation"]))
-        for item in items
-    ]
-
-
-def parse_glossary_entries(items: list[dict]) -> list[GlossaryEntry]:
-    entries: list[GlossaryEntry] = []
+    lines: list[TranslationLine] = []
     for item in items:
+        translation = item.get("translation")
+        if translation is None:
+            translation = item.get("text")
+        if translation is None:
+            translation = item.get("target")
+        if translation is None:
+            raise KeyError("translation")
+        lines.append(TranslationLine(id=str(item["id"]), translation=str(translation)))
+    return lines
+
+
+def parse_glossary_entries(items: list[dict] | dict[str, str]) -> list[GlossaryEntry]:
+    if isinstance(items, dict):
+        iterable = [{"source": key, "target": value} for key, value in items.items()]
+    else:
+        iterable = items
+    entries: list[GlossaryEntry] = []
+    for item in iterable:
         source = str(item.get("source", "")).strip()
         target = str(item.get("target", "")).strip()
         if source and target:
@@ -311,3 +477,55 @@ def _format_http_error(provider_label: str, status_code: int, body: str) -> str:
     if status_code in {401, 403}:
         return f"{provider_label} rejected the credentials ({status_code}): {normalized}"
     return f"{provider_label} credential check failed ({status_code}): {normalized}"
+
+
+def _extract_request_id(headers: Message | HTTPMessage | None) -> str | None:
+    if headers is None:
+        return None
+    for header_name in ("x-request-id", "request-id", "anthropic-request-id"):
+        value = headers.get(header_name)
+        if value:
+            return str(value)
+    return None
+
+
+def _extract_retry_after_seconds(headers: Message | HTTPMessage | None) -> float | None:
+    if headers is None:
+        return None
+    retry_after = headers.get("retry-after")
+    if retry_after is None:
+        return None
+    try:
+        return max(0.0, float(retry_after))
+    except ValueError:
+        return None
+
+
+def _is_retryable_http_status(status_code: int | None) -> bool:
+    if status_code is None:
+        return False
+    return status_code in {408, 409, 429} or 500 <= status_code < 600
+
+
+def _stringify_transport_reason(exc: BaseException) -> str:
+    if isinstance(exc, urllib.error.URLError):
+        return str(exc.reason)
+    return str(exc)
+
+
+def _format_backend_error_message(metadata: BackendErrorMetadata) -> str:
+    parts = [f"{metadata.provider} request failed"]
+    if metadata.status_code is not None:
+        parts.append(f"status={metadata.status_code}")
+    if metadata.request_id:
+        parts.append(f"request_id={metadata.request_id}")
+    if metadata.reason:
+        parts.append(f"reason={metadata.reason}")
+    if metadata.retryable:
+        parts.append("retryable=yes")
+    else:
+        parts.append("retryable=no")
+    body = (metadata.response_body or "").strip().replace("\n", " ")
+    if body:
+        parts.append(f"body={body[:400]}")
+    return "; ".join(parts)

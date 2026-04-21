@@ -7,7 +7,7 @@ import typer
 from rich.console import Console
 
 from subbake import __version__
-from subbake.entities import PipelineOptions
+from subbake.entities import DEFAULT_BATCH_SIZE, PipelineOptions
 from subbake.models import build_backend
 from subbake.pipeline import SubtitlePipeline
 from subbake.storage import build_runtime_paths
@@ -28,7 +28,7 @@ Common options for `sbake translate`:
   --model          Set the model name
   --base-url       Set the OpenAI-compatible API base URL
   --api-key        Pass the API key directly
-  --batch-size     Batch size, default is 50
+  --batch-size     Batch size, default is 30
   --bilingual      Output bilingual subtitles
   --dry-run        Parse and plan batches without calling the model
   --resume         Resume from run_state.json when available
@@ -91,12 +91,21 @@ def translate(
     model: str = typer.Option("mock-zh", "--model", help="Model name for the selected provider."),
     api_key: str | None = typer.Option(None, "--api-key", help="API key override for the provider."),
     base_url: str | None = typer.Option(None, "--base-url", help="OpenAI-compatible API base URL."),
-    batch_size: int = typer.Option(50, "--batch-size", min=1, help="Subtitle entries per translation batch."),
+    batch_size: int = typer.Option(
+        DEFAULT_BATCH_SIZE,
+        "--batch-size",
+        min=1,
+        help="Subtitle entries per translation batch.",
+    ),
     bilingual: bool = typer.Option(False, "--bilingual", help="Emit bilingual subtitles."),
     source_language: str = typer.Option("Auto", "--source-language", help="Source language hint."),
     target_language: str = typer.Option("Chinese", "--target-language", help="Target language."),
     retries: int = typer.Option(2, "--retries", min=0, help="Retries for malformed model output."),
-    final_review: bool = typer.Option(True, "--final-review/--no-final-review", help="Run the consistency review pass."),
+    final_review: bool = typer.Option(
+        True,
+        "--final-review/--no-final-review",
+        help="Run targeted consistency review on high-risk batches.",
+    ),
     timeout: float = typer.Option(120.0, "--timeout", min=1.0, help="Per-request timeout in seconds."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Only parse and show batch planning without calling the model."),
     resume: bool = typer.Option(True, "--resume/--no-resume", help="Resume from saved run state when available."),

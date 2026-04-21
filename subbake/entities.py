@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+DEFAULT_BATCH_SIZE = 30
+
 
 @dataclass(slots=True)
 class SubtitleSegment:
@@ -80,7 +82,7 @@ class PipelineOptions:
     output_path: Path | None = None
     provider: str = "mock"
     model: str = "mock-zh"
-    batch_size: int = 50
+    batch_size: int = DEFAULT_BATCH_SIZE
     bilingual: bool = False
     target_language: str = "Chinese"
     source_language: str = "Auto"

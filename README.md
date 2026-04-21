@@ -15,10 +15,10 @@
 
 - 支持 `.srt`、`.vtt` 和按行处理的 `.txt`
 - 默认翻译目标语言为中文，支持双语输出
-- 批量翻译与上下文记忆，默认批次大小为 `50`
-- glossary 持久化、缓存复用、断点续跑
+- 智能批量翻译与上下文记忆，默认批次大小上限为 `30`
+- glossary 持久化、缓存复用、增量式断点续跑
 - 输出校验、失败重试、失败样本落盘
-- 最终复审，统一术语、语气和风格
+- 针对高风险 batch 的最终复审，统一术语、语气和风格
 - 基于 `rich` 的命令行可视化，包括进度、时间线和 Token 用量
 
 ## 安装
@@ -129,6 +129,8 @@ sbake check-key --provider anthropic
 
 - `cache/`：按 prompt hash 缓存的模型响应
 - `runs/.../run_state.json`：运行状态与断点续跑信息
+- `runs/.../translated_batches/`：每个翻译 batch 的分片结果
+- `runs/.../reviewed_batches/`：每个复审 batch 的分片结果
 - `runs/.../failures/`：失败 batch 样本
 - `glossary.json`：持久化 glossary
 
@@ -145,14 +147,14 @@ sbake check-key --provider anthropic
 - `--model`：模型名称
 - `--api-key`：直接传入 API Key
 - `--base-url`：OpenAI 兼容接口地址
-- `--batch-size`：批次大小，默认 `50`
+- `--batch-size`：批次大小，默认 `30`
 - `--bilingual`：输出双语字幕
 - `--dry-run`：只解析和切分 batch，不调用模型
 - `--resume / --no-resume`：是否使用断点续跑
 - `--cache / --no-cache`：是否启用缓存
 - `--work-dir`：运行期目录
 - `--glossary-path`：glossary 文件位置
-- `--final-review / --no-final-review`：是否执行最终复审
+- `--final-review / --no-final-review`：是否对高风险 batch 执行最终复审
 
 完整命令说明请参考：
 

@@ -10,7 +10,9 @@ from typing import Any
 from subbake.entities import PipelineOptions, SubtitleSegment, Usage
 from subbake.memory import ContextMemory
 
-RUN_STATE_VERSION = 1
+RUN_STATE_VERSION = 3
+TRANSLATION_FINGERPRINT_VERSION = 4
+RENDER_FINGERPRINT_VERSION = 1
 CACHE_VERSION = 1
 
 
@@ -22,6 +24,9 @@ class RuntimePaths:
     state_path: Path
     glossary_path: Path
     failures_dir: Path
+    translated_batches_dir: Path
+    reviewed_batches_dir: Path
+    translation_memory_path: Path
 
 
 @dataclass(slots=True)
@@ -32,6 +37,7 @@ class ResumeSnapshot:
     memory: ContextMemory = field(default_factory=ContextMemory)
     translation_batches_completed: int = 0
     review_batches_completed: int = 0
+    validation_completed: bool = False
 
 
 def build_runtime_paths(
@@ -50,6 +56,9 @@ def build_runtime_paths(
         state_path=run_dir / "run_state.json",
         glossary_path=glossary_path or root_dir / "glossary.json",
         failures_dir=run_dir / "failures",
+        translated_batches_dir=run_dir / "translated_batches",
+        reviewed_batches_dir=run_dir / "reviewed_batches",
+        translation_memory_path=root_dir / "translation_memory.json",
     )
 
 
@@ -63,12 +72,12 @@ def compute_input_signature(path: Path) -> dict[str, Any]:
     }
 
 
-def build_pipeline_fingerprint(
+def build_translation_fingerprint(
     options: PipelineOptions,
     input_signature: dict[str, Any],
 ) -> str:
     payload = {
-        "version": RUN_STATE_VERSION,
+        "version": TRANSLATION_FINGERPRINT_VERSION,
         "input_signature": input_signature,
         "input_format": options.input_path.suffix.lower(),
         "provider": options.provider,
@@ -76,8 +85,16 @@ def build_pipeline_fingerprint(
         "batch_size": options.batch_size,
         "source_language": options.source_language,
         "target_language": options.target_language,
-        "final_review": options.final_review,
+    }
+    return _stable_hash(payload)
+
+
+def build_render_fingerprint(options: PipelineOptions) -> str:
+    payload = {
+        "version": RENDER_FINGERPRINT_VERSION,
         "bilingual": options.bilingual,
+        "final_review": options.final_review,
+        "output_path": str(options.output_path) if options.output_path is not None else None,
     }
     return _stable_hash(payload)
 
@@ -138,31 +155,28 @@ class GlossaryStore:
 
 
 class RunStateStore:
-    def __init__(self, path: Path, pipeline_fingerprint: str) -> None:
+    def __init__(self, path: Path, translation_fingerprint: str, render_fingerprint: str) -> None:
         self.path = path
-        self.pipeline_fingerprint = pipeline_fingerprint
+        self.translation_fingerprint = translation_fingerprint
+        self.render_fingerprint = render_fingerprint
 
     def load(self) -> ResumeSnapshot | None:
         if not self.path.exists():
             return None
         data = json.loads(self.path.read_text(encoding="utf-8"))
-        if data.get("version") != RUN_STATE_VERSION:
+        if data.get("version") not in {1, 2, RUN_STATE_VERSION}:
             return None
-        if data.get("pipeline_fingerprint") != self.pipeline_fingerprint:
+        stored_translation_fingerprint = data.get("translation_fingerprint") or data.get("pipeline_fingerprint")
+        if stored_translation_fingerprint != self.translation_fingerprint:
             return None
         return ResumeSnapshot(
-            translated_segments=[
-                _segment_from_dict(item)
-                for item in data.get("translated_segments", [])
-            ],
-            reviewed_segments=[
-                _segment_from_dict(item)
-                for item in data.get("reviewed_segments", [])
-            ],
+            translated_segments=_load_legacy_segments(data.get("translated_segments", [])),
+            reviewed_segments=_load_legacy_segments(data.get("reviewed_segments", [])),
             usage=_usage_from_dict(data.get("usage", {})),
             memory=ContextMemory.from_dict(data.get("memory", {})),
             translation_batches_completed=int(data.get("translation_batches_completed", 0)),
             review_batches_completed=int(data.get("review_batches_completed", 0)),
+            validation_completed=bool(data.get("validation_completed", False)),
         )
 
     def save(
@@ -171,16 +185,16 @@ class RunStateStore:
         options: PipelineOptions,
         output_path: Path | None,
         input_signature: dict[str, Any],
-        translated_segments: list[SubtitleSegment],
-        reviewed_segments: list[SubtitleSegment],
         usage: Usage,
         memory: ContextMemory,
         translation_batches_completed: int,
         review_batches_completed: int,
+        validation_completed: bool,
     ) -> None:
         payload = {
             "version": RUN_STATE_VERSION,
-            "pipeline_fingerprint": self.pipeline_fingerprint,
+            "translation_fingerprint": self.translation_fingerprint,
+            "render_fingerprint": self.render_fingerprint,
             "input_path": str(options.input_path),
             "output_path": str(output_path) if output_path is not None else None,
             "input_signature": input_signature,
@@ -189,12 +203,61 @@ class RunStateStore:
             "batch_size": options.batch_size,
             "translation_batches_completed": translation_batches_completed,
             "review_batches_completed": review_batches_completed,
-            "translated_segments": [_segment_to_dict(item) for item in translated_segments],
-            "reviewed_segments": [_segment_to_dict(item) for item in reviewed_segments],
+            "validation_completed": validation_completed,
             "usage": _usage_to_dict(usage),
             "memory": memory.to_dict(),
         }
         _write_json(self.path, payload)
+
+
+class BatchShardStore:
+    def __init__(self, root_dir: Path) -> None:
+        self.root_dir = root_dir
+
+    def load_segments(self, completed_batches: int) -> list[SubtitleSegment]:
+        segments: list[SubtitleSegment] = []
+        for batch_index in range(1, completed_batches + 1):
+            payload = self._load_payload(batch_index)
+            segments.extend(
+                _segment_from_dict(item)
+                for item in payload.get("segments", [])
+            )
+        return segments
+
+    def save_segments(self, batch_index: int, segments: list[SubtitleSegment]) -> None:
+        _write_json(
+            self._path_for(batch_index),
+            {
+                "batch_index": batch_index,
+                "segments": [_segment_to_dict(item) for item in segments],
+            },
+        )
+
+    def _load_payload(self, batch_index: int) -> dict[str, Any]:
+        path = self._path_for(batch_index)
+        if not path.exists():
+            raise FileNotFoundError(f"Missing batch shard for resume: {path}")
+        return dict(json.loads(path.read_text(encoding="utf-8")))
+
+    def _path_for(self, batch_index: int) -> Path:
+        return self.root_dir / f"{batch_index:04d}.json"
+
+
+class TranslationMemoryStore:
+    def __init__(self, path: Path) -> None:
+        self.path = path
+
+    def load(self) -> dict[str, str]:
+        if not self.path.exists():
+            return {}
+        data = json.loads(self.path.read_text(encoding="utf-8"))
+        return {
+            str(key): str(value)
+            for key, value in dict(data).items()
+        }
+
+    def save(self, entries: dict[str, str]) -> None:
+        _write_json(self.path, entries)
 
 
 class FailureStore:
@@ -249,6 +312,10 @@ def _segment_from_dict(data: dict[str, Any]) -> SubtitleSegment:
         identifier=data.get("identifier"),
         settings=data.get("settings"),
     )
+
+
+def _load_legacy_segments(items: list[dict[str, Any]]) -> list[SubtitleSegment]:
+    return [_segment_from_dict(item) for item in items]
 
 
 def _usage_to_dict(usage: Usage) -> dict[str, int]:
