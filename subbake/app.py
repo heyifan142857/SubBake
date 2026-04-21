@@ -34,6 +34,8 @@ Common commands:
   sbake clean . --all
 
 Common options for `sbake translate`:
+  --output         Set the output file path
+  --output-format  Force the output format: srt / vtt / txt
   --provider       Choose the model provider, such as mock / openai / anthropic
   --model          Set the model name
   --base-url       Set the OpenAI-compatible API base URL
@@ -135,6 +137,11 @@ def translate(
     ctx: typer.Context,
     input_path: Path = typer.Argument(..., exists=True, dir_okay=False, help="Input .srt, .vtt, or .txt file."),
     output: Path | None = typer.Option(None, "--output", "-o", dir_okay=False, help="Output file path."),
+    output_format: str | None = typer.Option(
+        None,
+        "--output-format",
+        help="Output format override: srt, vtt, or txt. When omitted, sbake infers the format from --output if it uses a supported suffix, otherwise it keeps the input format.",
+    ),
     provider: str = typer.Option("mock", "--provider", help="LLM provider: mock, openai, anthropic."),
     model: str = typer.Option("mock-zh", "--model", help="Model name for the selected provider."),
     api_key: str | None = typer.Option(None, "--api-key", help="API key override for the provider."),
@@ -145,7 +152,7 @@ def translate(
         dir_okay=False,
         exists=True,
         resolve_path=True,
-        help="Path to subbake.toml. By default sbake auto-discovers subbake.toml upward from the current directory.",
+        help="Path to subbake.toml. By default sbake checks project config upward from the current directory, then falls back to home/global config.",
     ),
     profile: str | None = typer.Option(
         None,
@@ -199,6 +206,7 @@ def translate(
         model = _configured_value(ctx, "model", model, config_values)
         api_key = _configured_value(ctx, "api_key", api_key, config_values)
         base_url = _configured_value(ctx, "base_url", base_url, config_values)
+        output_format = _configured_value(ctx, "output_format", output_format, config_values)
         batch_size = _configured_value(ctx, "batch_size", batch_size, config_values)
         fast = _configured_value(ctx, "fast", fast, config_values)
         bilingual = _configured_value(ctx, "bilingual", bilingual, config_values)
@@ -219,6 +227,7 @@ def translate(
         options = PipelineOptions(
             input_path=input_path,
             output_path=output,
+            output_format=output_format,
             provider=provider,
             model=model,
             batch_size=batch_size,
@@ -321,7 +330,7 @@ def check_key(
         dir_okay=False,
         exists=True,
         resolve_path=True,
-        help="Path to subbake.toml. By default sbake auto-discovers subbake.toml upward from the current directory.",
+        help="Path to subbake.toml. By default sbake checks project config upward from the current directory, then falls back to home/global config.",
     ),
     profile: str | None = typer.Option(
         None,

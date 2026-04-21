@@ -25,6 +25,7 @@ class CLITestCase(unittest.TestCase):
         self.assertIn("another target such as en / ja / fr.", output)
         self.assertIn("Common commands:", output)
         self.assertIn("sbake translate input.srt", output)
+        self.assertIn("--output-format", output)
         self.assertIn("--provider", output)
         self.assertIn("--fast", output)
         self.assertIn("--target-language", output)
@@ -164,6 +165,34 @@ class CLITestCase(unittest.TestCase):
 
             self.assertEqual(result.exit_code, 0)
             self.assertIn("[MOCK-ZH] hello", Path("clip.translated.txt").read_text(encoding="utf-8"))
+
+    def test_translate_can_convert_output_format_from_output_suffix(self) -> None:
+        with self.runner.isolated_filesystem():
+            Path("clip.srt").write_text(
+                "1\n"
+                "00:00:01,000 --> 00:00:02,000\n"
+                "hello\n",
+                encoding="utf-8",
+            )
+
+            result = self.runner.invoke(
+                app,
+                [
+                    "translate",
+                    "clip.srt",
+                    "--provider",
+                    "mock",
+                    "--model",
+                    "mock-zh",
+                    "--output",
+                    "converted.txt",
+                    "--no-final-review",
+                ],
+            )
+
+            self.assertEqual(result.exit_code, 0)
+            self.assertTrue(Path("converted.txt").exists())
+            self.assertEqual(Path("converted.txt").read_text(encoding="utf-8"), "[MOCK-ZH] hello\n")
 
     def _strip_ansi(self, value: str) -> str:
         return re.sub(r"\x1b\[[0-9;]*m", "", value)

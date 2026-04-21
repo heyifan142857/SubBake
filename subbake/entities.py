@@ -80,6 +80,7 @@ class BatchPlanEntry:
 class PipelineOptions:
     input_path: Path
     output_path: Path | None = None
+    output_format: str | None = None
     provider: str = "mock"
     model: str = "mock-zh"
     batch_size: int = DEFAULT_BATCH_SIZE

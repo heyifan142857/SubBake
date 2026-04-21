@@ -123,3 +123,26 @@ class ParserTestCase(unittest.TestCase):
         self.assertEqual(document.segments[1].identifier, "2")
         self.assertEqual(document.segments[1].text, "{\\an8}World")
         self.assertEqual(rendered, expected_rendered)
+
+    def test_render_document_can_convert_srt_to_txt(self) -> None:
+        document = SubtitleDocument(
+            path=Path("sample.srt"),
+            format="srt",
+            segments=[
+                SubtitleSegment(id="1", start="00:00:01,000", end="00:00:03,000", text="Hello"),
+                SubtitleSegment(id="2", start="00:00:04,000", end="00:00:06,000", text="World"),
+            ],
+        )
+        translations = [
+            SubtitleSegment(id="1", start="00:00:01,000", end="00:00:03,000", text="你好"),
+            SubtitleSegment(id="2", start="00:00:04,000", end="00:00:06,000", text="世界"),
+        ]
+
+        rendered = render_document(
+            document,
+            translations,
+            bilingual=False,
+            output_format="txt",
+        )
+
+        self.assertEqual(rendered, "你好\n世界\n")

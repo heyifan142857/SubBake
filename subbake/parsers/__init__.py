@@ -21,11 +21,20 @@ def render_document(
     document: SubtitleDocument,
     translations: list[SubtitleSegment],
     bilingual: bool,
+    output_format: str | None = None,
 ) -> str:
-    if document.format == "srt":
+    target_format = output_format or document.format
+    if target_format == "srt":
         return render_srt_document(translations, bilingual=bilingual)
-    if document.format == "vtt":
-        return render_vtt_document(document, translations, bilingual=bilingual)
-    if document.format == "txt":
+    if target_format == "vtt":
+        vtt_document = SubtitleDocument(
+            path=document.path,
+            format="vtt",
+            segments=document.segments,
+            header=document.header if document.format == "vtt" else "WEBVTT",
+            passthrough_blocks=document.passthrough_blocks if document.format == "vtt" else [],
+        )
+        return render_vtt_document(vtt_document, translations, bilingual=bilingual)
+    if target_format == "txt":
         return render_txt_document(document.segments, translations, bilingual=bilingual)
-    raise ValueError(f"Unsupported output format: {document.format}")
+    raise ValueError(f"Unsupported output format: {target_format}")

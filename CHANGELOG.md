@@ -9,6 +9,7 @@ This file tracks notable changes for each release.
 - A `--fast` mode that uses lighter prompts, skips final review, and prefers best-effort completion when model structure is unstable.
 - Target language aliases such as `en`, `ja`, `ko`, `fr`, `es`, and `de`, plus matching source-language alias support.
 - `subbake.toml` configuration support with auto-discovery, `--config`, `--profile`, `[defaults]`, and named profiles for model/provider presets.
+- An `--output-format` option that can convert subtitle output between `srt`, `vtt`, and `txt`, plus output-path suffix inference such as `.srt -> .txt`.
 
 ### Changed
 
@@ -17,6 +18,9 @@ This file tracks notable changes for each release.
 - Mock translations now reflect the requested target language, which keeps local testing aligned with the new alias-aware target-language behavior.
 - Command-line options now override config values, while config defaults and profiles fill in omitted parameters.
 - When multiple config profiles exist, `sbake` now requires `default_profile` or an explicit `--profile` instead of silently picking the first one.
+- Config discovery now follows `command line > project config > home/global config > built-in defaults`, with global config support for Linux, macOS, and Windows locations.
+- README examples now use a `chatgpt` profile instead of `deepseek`, and the output section documents explicit output paths and cross-format rendering.
+- The config-file docs now point to a repository example file and more clearly recommend home/global config for personal default usage, with project config as an override layer.
 
 ## [0.2.0] - 2026-04-21
 

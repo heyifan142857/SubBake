@@ -76,29 +76,9 @@ sbake translate input.srt --provider openai --model your-model --target-language
 sbake translate input.srt --provider openai --model your-model --target-language ja
 ```
 
-如果你不想每次都重复写 provider、model、语言和运行参数，可以放进 `subbake.toml`：
+如果你不想每次都重复写 provider、model、语言和运行参数，可以参考仓库里的示例配置 [examples/subbake.toml](examples/subbake.toml)。
 
-```toml
-default_profile = "deepseek"
-
-[defaults]
-target_language = "zh"
-batch_size = 30
-resume = true
-cache = true
-
-[profiles.deepseek]
-provider = "openai"
-model = "deepseek-chat"
-base_url = "https://your-provider.example.com/v1"
-
-[profiles.fast_en]
-provider = "openai"
-model = "deepseek-chat"
-target_language = "en"
-fast = true
-final_review = false
-```
+个人使用更推荐放在 home 全局配置里，这样平时直接 `sbake translate ...` 就够了；如果某个项目需要单独的 provider、model 或语言设置，再在项目目录里放一个 `subbake.toml` 覆盖即可。
 
 然后直接运行：
 
@@ -149,7 +129,20 @@ sbake translate input.srt --provider openai --model your-model --no-resume --no-
 
 ```bash
 sbake translate input.srt --config ./subbake.toml
-sbake check-key --config ./subbake.toml --profile deepseek
+sbake check-key --config ./subbake.toml --profile chatgpt
+```
+
+指定输出路径：
+
+```bash
+sbake translate input.srt --provider openai --model your-model --output ./out/movie.zh.srt
+```
+
+转换输出格式：
+
+```bash
+sbake translate input.srt --provider openai --model your-model --output-format txt
+sbake translate input.srt --provider openai --model your-model --output ./out/movie.en.txt
 ```
 
 清理运行期文件：
@@ -192,7 +185,17 @@ sbake check-key --provider anthropic
 
 ## 配置文件
 
-`sbake` 会自动从当前目录向上查找 `subbake.toml` 或 `.subbake.toml`。也可以通过 `--config` 显式指定。
+`sbake` 会按下面的顺序找配置：
+
+- 命令行显式传入的 `--config`
+- 当前目录向上查找的项目配置：`subbake.toml` 或 `.subbake.toml`
+- home 全局配置
+  - Linux / 通用：`~/.config/subbake/config.toml`
+  - macOS：`~/Library/Application Support/subbake/config.toml`
+  - Windows：`%APPDATA%\\subbake\\config.toml`
+  - 兼容兜底：`~/.subbake.toml`
+
+如果你只是自己长期使用一个模型配置，通常更适合把 [examples/subbake.toml](examples/subbake.toml) 复制到 home 全局配置位置；如果是仓库内协作，再把项目专用配置放在工作目录里。
 
 参数优先级如下：
 
@@ -210,6 +213,10 @@ sbake check-key --provider anthropic
 
 - 普通输出：`input.translated.srt` / `input.translated.vtt` / `input.translated.txt`
 - 双语输出：`input.bilingual.srt` / `input.bilingual.vtt` / `input.bilingual.txt`
+- 可通过 `--output` 指定输出路径
+- 可通过 `--output-format srt|vtt|txt` 强制指定输出格式
+- 如果 `--output` 使用了受支持的后缀，例如 `result.txt`，`sbake` 会自动把它当成目标输出格式
+- `srt` / `vtt` 可转为 `txt`，也可互转；`.txt` 输入不能转成 `srt` / `vtt`，因为原文件没有时间轴
 
 ## 常用参数
 

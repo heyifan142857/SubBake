@@ -94,6 +94,7 @@ class SubtitlePipeline:
         self.translation_memory: dict[str, str] = {}
         self.state_store: RunStateStore | None = None
         self.input_signature: dict | None = None
+        self.output_format = self._resolve_output_format(options.input_path)
         self.output_path = self._resolve_output_path(options.input_path)
 
     def run(self) -> PipelineResult:
@@ -175,7 +176,13 @@ class SubtitlePipeline:
 
             output_segments = self._build_output_segments(document, reviewed_segments)
             self.dashboard.mark_running("WRITE_OUTPUT")
-            rendered = render_document(document, output_segments, bilingual=self.options.bilingual)
+            rendered = render_document(
+                document,
+                output_segments,
+                bilingual=self.options.bilingual,
+                output_format=self.output_format,
+            )
+            self.output_path.parent.mkdir(parents=True, exist_ok=True)
             self.output_path.write_text(rendered, encoding="utf-8")
             self.dashboard.mark_done("WRITE_OUTPUT")
             self.dashboard.clear_batch()
@@ -1338,10 +1345,46 @@ class SubtitlePipeline:
             score += 1
         return reasons if score >= 2 else []
 
+    def _resolve_output_format(self, input_path: Path) -> str:
+        supported_suffixes = {".srt", ".vtt", ".txt"}
+        configured_format = self.options.output_format
+        if configured_format is not None:
+            configured_format = configured_format.strip().lower().lstrip(".")
+            if f".{configured_format}" not in supported_suffixes:
+                raise ValueError("Supported output formats are srt, vtt, and txt.")
+
+        output_suffix_format: str | None = None
+        if self.options.output_path is not None:
+            output_suffix = self.options.output_path.suffix.lower()
+            if output_suffix:
+                if output_suffix not in supported_suffixes:
+                    raise ValueError(
+                        f"Unsupported output file extension: {output_suffix}. "
+                        "Use .srt, .vtt, .txt, or pass --output-format."
+                    )
+                output_suffix_format = output_suffix.lstrip(".")
+
+        if configured_format is not None and output_suffix_format is not None and configured_format != output_suffix_format:
+            raise ValueError(
+                "Output format conflict: --output-format does not match the suffix in --output."
+            )
+
+        effective_output_format = (
+            configured_format
+            or output_suffix_format
+            or input_path.suffix.lower().lstrip(".")
+        )
+
+        if input_path.suffix.lower() == ".txt" and effective_output_format in {"srt", "vtt"}:
+            raise ValueError(
+                "Cannot render .txt input as .srt or .vtt because plain text input has no timing information."
+            )
+        return effective_output_format
+
     def _resolve_output_path(self, input_path: Path) -> Path:
         if self.options.output_path is not None:
             return self.options.output_path
-        suffix = input_path.suffix.lower()
+        suffix = f".{self.output_format}"
         flavor = "bilingual" if self.options.bilingual else "translated"
         return input_path.with_name(f"{input_path.stem}.{flavor}{suffix}")
 

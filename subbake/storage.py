@@ -13,7 +13,7 @@ from subbake.memory import ContextMemory
 
 RUN_STATE_VERSION = 3
 TRANSLATION_FINGERPRINT_VERSION = 5
-RENDER_FINGERPRINT_VERSION = 1
+RENDER_FINGERPRINT_VERSION = 2
 CACHE_VERSION = 1
 
 
@@ -101,6 +101,7 @@ def build_render_fingerprint(options: PipelineOptions) -> str:
         "version": RENDER_FINGERPRINT_VERSION,
         "bilingual": options.bilingual,
         "final_review": options.final_review,
+        "output_format": options.output_format,
         "output_path": str(options.output_path) if options.output_path is not None else None,
     }
     return _stable_hash(payload)

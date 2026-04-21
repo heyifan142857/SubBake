@@ -1,0 +1,19 @@
+default_profile = "chatgpt"
+
+[defaults]
+target_language = "zh"
+batch_size = 30
+resume = true
+cache = true
+
+[profiles.chatgpt]
+provider = "openai"
+model = "gpt-5.4-mini"
+api_key_env = "OPENAI_API_KEY"
+
+[profiles.fast_en]
+provider = "openai"
+model = "gpt-5.4-mini"
+target_language = "en"
+fast = true
+final_review = false

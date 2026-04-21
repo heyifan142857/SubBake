@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+import sys
 import tomllib
 from typing import Any
 
@@ -16,6 +17,7 @@ COMMON_CONFIG_KEYS = {
     "timeout",
 }
 TRANSLATE_CONFIG_KEYS = COMMON_CONFIG_KEYS | {
+    "output_format",
     "batch_size",
     "fast",
     "bilingual",
@@ -57,6 +59,13 @@ class AppConfig:
 
 
 def discover_config_path(search_from: Path | None = None) -> Path | None:
+    project_path = discover_project_config_path(search_from)
+    if project_path is not None:
+        return project_path
+    return discover_global_config_path()
+
+
+def discover_project_config_path(search_from: Path | None = None) -> Path | None:
     current = (search_from or Path.cwd()).resolve()
     if current.is_file():
         current = current.parent
@@ -66,6 +75,33 @@ def discover_config_path(search_from: Path | None = None) -> Path | None:
             if candidate.exists():
                 return candidate
     return None
+
+
+def discover_global_config_path() -> Path | None:
+    for candidate in global_config_candidates():
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def global_config_candidates() -> list[Path]:
+    home_dir = Path.home()
+    candidates: list[Path] = []
+
+    xdg_config_home = os.getenv("XDG_CONFIG_HOME")
+    if xdg_config_home:
+        candidates.append(Path(xdg_config_home) / "subbake" / "config.toml")
+
+    appdata_dir = os.getenv("APPDATA")
+    if appdata_dir:
+        candidates.append(Path(appdata_dir) / "subbake" / "config.toml")
+
+    if sys.platform == "darwin":
+        candidates.append(home_dir / "Library" / "Application Support" / "subbake" / "config.toml")
+
+    candidates.append(home_dir / ".config" / "subbake" / "config.toml")
+    candidates.append(home_dir / ".subbake.toml")
+    return _dedupe_paths(candidates)
 
 
 def load_app_config(path: Path) -> AppConfig:
@@ -246,3 +282,15 @@ def _coerce_config_value(
         return value
 
     raise ValueError(f"Unsupported config key in {label}: {key}.")
+
+
+def _dedupe_paths(paths: list[Path]) -> list[Path]:
+    deduped: list[Path] = []
+    seen: set[Path] = set()
+    for path in paths:
+        resolved = path.expanduser()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        deduped.append(resolved)
+    return deduped

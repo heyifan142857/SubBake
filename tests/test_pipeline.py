@@ -828,3 +828,83 @@ class PipelineTestCase(unittest.TestCase):
 
             self.assertIn("[MOCK-ZH] Same line", first_result.output_path.read_text(encoding="utf-8"))
             self.assertIn("[MOCK-EN] Same line", second_result.output_path.read_text(encoding="utf-8"))
+
+    def test_output_format_can_convert_srt_to_txt(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            input_path = temp_path / "episode.srt"
+            input_path.write_text(
+                "1\n"
+                "00:00:01,000 --> 00:00:03,000\n"
+                "Hello there.\n\n"
+                "2\n"
+                "00:00:04,000 --> 00:00:06,000\n"
+                "General Kenobi.\n",
+                encoding="utf-8",
+            )
+
+            result = SubtitlePipeline(
+                backend=ScriptedBackend(),
+                options=PipelineOptions(
+                    input_path=input_path,
+                    output_format="txt",
+                    batch_size=2,
+                    final_review=False,
+                    work_dir=temp_path / "runtime",
+                ),
+                dashboard=QuietDashboard(),
+            ).run()
+
+            self.assertEqual(result.output_path.name, "episode.translated.txt")
+            self.assertEqual(
+                result.output_path.read_text(encoding="utf-8"),
+                "[SCRIPTED] Hello there.\n[SCRIPTED] General Kenobi.\n",
+            )
+
+    def test_output_path_suffix_can_infer_output_format(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            input_path = temp_path / "episode.srt"
+            output_path = temp_path / "exports" / "episode.en.txt"
+            input_path.write_text(
+                "1\n"
+                "00:00:01,000 --> 00:00:03,000\n"
+                "Hello there.\n",
+                encoding="utf-8",
+            )
+
+            result = SubtitlePipeline(
+                backend=ScriptedBackend(),
+                options=PipelineOptions(
+                    input_path=input_path,
+                    output_path=output_path,
+                    batch_size=2,
+                    final_review=False,
+                    work_dir=temp_path / "runtime",
+                ),
+                dashboard=QuietDashboard(),
+            ).run()
+
+            self.assertEqual(result.output_path, output_path)
+            self.assertEqual(
+                result.output_path.read_text(encoding="utf-8"),
+                "[SCRIPTED] Hello there.\n",
+            )
+
+    def test_txt_input_cannot_convert_to_timed_output_formats(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            input_path = temp_path / "episode.txt"
+            input_path.write_text("Hello there.\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "no timing information"):
+                SubtitlePipeline(
+                    backend=FailingBackend(),
+                    options=PipelineOptions(
+                        input_path=input_path,
+                        output_format="srt",
+                        final_review=False,
+                        work_dir=temp_path / "runtime",
+                    ),
+                    dashboard=QuietDashboard(),
+                )
