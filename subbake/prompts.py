@@ -131,9 +131,12 @@ def build_review_messages(
     review_payload = {
         "tgt": target_language,
         "reasons": reasons,
+        "expected_count": len(source_segments),
+        "expected_ids": [source.id for source in source_segments],
         "lines": [
             {
                 "id": source.id,
+                "source": source.text,
                 "translation": translated.text,
             }
             for source, translated in zip(source_segments, translated_segments, strict=True)
@@ -144,24 +147,15 @@ def build_review_messages(
         review_payload["recent"] = recent
     if relevant_glossary:
         review_payload["glossary"] = relevant_glossary
-    focus_lines = [
-        {
-            "id": source.id,
-            "source": source.text,
-            "translation": translated.text,
-        }
-        for source, translated in zip(source_segments, translated_segments, strict=True)
-        if _needs_source_context(source.text)
-    ]
-    if focus_lines:
-        review_payload["focus"] = focus_lines
 
     user_prompt = (
         "TASK_START\n"
         "review_translations\n"
         "TASK_END\n"
         "Review only this high-risk batch.\n"
+        "Use the input lines array as the complete authoritative list of subtitle entries.\n"
         "Do not remove, reorder, merge, or renumber entries.\n"
+        "Return exactly one output object for each input line id, in the same order as expected_ids.\n"
         "Prefer minimal edits; leave good lines untouched.\n"
         'Return JSON only with keys "lines" and "review_notes".\n'
         "REVIEW_JSON_START\n"
@@ -176,19 +170,6 @@ def build_review_messages(
 
 def _compact_json(payload: dict) -> str:
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-
-
-def _needs_source_context(text: str) -> bool:
-    stripped = text.strip()
-    if not stripped:
-        return False
-    if "\n" in stripped:
-        return True
-    if any(marker in stripped for marker in ("<", ">", "{", "}", ">>")):
-        return True
-    if stripped.startswith(("-", "–", "—")):
-        return True
-    return any(character.isupper() for character in stripped)
 
 
 def _translation_structure_notes(batch_segments: list[SubtitleSegment]) -> list[str]:

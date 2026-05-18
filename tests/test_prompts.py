@@ -62,18 +62,20 @@ class PromptTestCase(unittest.TestCase):
             ],
         )
 
-    def test_review_prompt_only_includes_source_focus_for_risky_lines(self) -> None:
+    def test_review_prompt_uses_complete_authoritative_line_list(self) -> None:
         memory = ContextMemory()
         memory.glossary = {"Alice": "爱丽丝"}
 
         messages = build_review_messages(
             source_segments=[
                 SubtitleSegment(id="1", text="Hello Alice."),
-                SubtitleSegment(id="2", text="keep moving."),
+                SubtitleSegment(id="2", text="1885!"),
+                SubtitleSegment(id="3", text="keep moving."),
             ],
             translated_segments=[
                 SubtitleSegment(id="1", text="你好 Alice。"),
-                SubtitleSegment(id="2", text="继续前进。"),
+                SubtitleSegment(id="2", text="1885年！"),
+                SubtitleSegment(id="3", text="继续前进。"),
             ],
             memory=memory,
             target_language="Chinese",
@@ -83,17 +85,17 @@ class PromptTestCase(unittest.TestCase):
         payload = self._extract_json_block(messages[1]["content"], "REVIEW_JSON_START", "REVIEW_JSON_END")
 
         self.assertEqual(payload["glossary"], {"Alice": "爱丽丝"})
+        self.assertEqual(payload["expected_count"], 3)
+        self.assertEqual(payload["expected_ids"], ["1", "2", "3"])
         self.assertEqual(
             payload["lines"],
             [
-                {"id": "1", "translation": "你好 Alice。"},
-                {"id": "2", "translation": "继续前进。"},
+                {"id": "1", "source": "Hello Alice.", "translation": "你好 Alice。"},
+                {"id": "2", "source": "1885!", "translation": "1885年！"},
+                {"id": "3", "source": "keep moving.", "translation": "继续前进。"},
             ],
         )
-        self.assertEqual(
-            payload["focus"],
-            [{"id": "1", "source": "Hello Alice.", "translation": "你好 Alice。"}],
-        )
+        self.assertNotIn("focus", payload)
 
     def test_fast_translation_prompt_uses_lighter_context(self) -> None:
         memory = ContextMemory()

@@ -4,6 +4,12 @@ This file tracks notable changes for each release.
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-05-18
+
+### Fixed
+
+- Final review prompts now use one complete authoritative line list with source text for every entry, preventing short entries such as numeric exclamations from being dropped during review.
+
 ## [0.3.0] - 2026-04-21
 ### Added
 
